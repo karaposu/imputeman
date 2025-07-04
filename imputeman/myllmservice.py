@@ -23,8 +23,7 @@ class MyLLMService(BaseLLMService):
 
 
    
-    
-    
+
     def parse_via_llm(
         self,
         corpus: str,

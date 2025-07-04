@@ -1,197 +1,401 @@
-# imputeman.py
+# imputeman/imputeman.py
+
+# python -m imputeman.imputeman
 from __future__ import annotations
-import os, asyncio, time
-from typing import List, Dict, Any, Optional
+
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 from serpengine import SERPEngine
-from extracthero import ExtractHero, ItemToExtract
-from brightdata.auto import scrape_urls_async, scrape_urls, scrape_url
-from imputeman.myllmservice import MyLLMService  # whatever concrete subclass you use
+from serpengine.schemes import SerpEngineOp
+from extracthero import ExtractHero, WhatToRetain
+from extracthero.schemes import ExtractOp
+from brightdata.auto import scrape_urls_async, scrape_url
+from brightdata.models import ScrapeResult
+from imputeman.myllmservice import MyLLMService
 from imputeman.utils import _resolve
 
 
+@dataclass
+class ImputeOp:
+    """
+    Encapsulates one end-to-end run of Imputeman:
+      - the original query & schema
+      - the raw SERP & link list
+      - per-URL scrape & extract results
+      - summary metrics
+    """
+    query: str
+    schema: List[WhatToRetain]
+    search_op: SerpEngineOp
+    links: List[str]
+    scrape_results_dict: Dict[str, ScrapeResult]
+    extract_ops: Dict[str, ExtractOp]
+    hits: int
+    extracted: int
+    elapsed: float
+    results: Dict[str, Any]
+
+
 class Imputeman:
-    # ───────────── init ─────────────
+    """
+    One self-contained search → scrape → extract worker.
+
+    • Async entrypoint: `await run(...)`
+    • Sync  entrypoint: `run_sync(...)`
+
+    Intermediate state exposed on:
+      - self.search_op
+      - self.scrape_results_dict
+      - self.extract_ops
+    """
+
     def __init__(
         self,
         *,
-        serpengine_cfg: dict | None = None,
-        extracthero_cfg: dict | None = None,
-        # credential overrides (all optional)
-        OPENAI_API_KEY: str | None = None,
-        BRIGHTDATA_TOKEN: str | None = None,
-        BRIGHTDATA_BROWSERAPI_USERNAME: str | None = None,
-        BRIGHTDATA_BROWSERAPI_PASSWORD: str | None = None,
-        BRIGHTDATA_WEBUNCLOKCER_BEARER: str | None = None,
-        BRIGHTDATA_WEBUNCLOKCER_APP_ZONE_STRING: str | None = None,
-        GOOGLE_SEARCH_API_KEY: str | None = None,
-        GOOGLE_CSE_ID: str | None = None,
-        # shared LLM service
-        # my_llm_service: MyLLMService | None = None,
-        my_llm_service = None,
-        # concurrency
+        serpengine_cfg: Optional[dict] = None,
+        extracthero_cfg: Optional[dict] = None,
+        OPENAI_API_KEY: Optional[str] = None,
+        BRIGHTDATA_TOKEN: Optional[str] = None,
+        BRIGHTDATA_BROWSERAPI_USERNAME: Optional[str] = None,
+        BRIGHTDATA_BROWSERAPI_PASSWORD: Optional[str] = None,
+        BRIGHTDATA_WEBUNCLOKCER_BEARER: Optional[str] = None,
+        BRIGHTDATA_WEBUNCLOKCER_APP_ZONE_STRING: Optional[str] = None,
+        GOOGLE_SEARCH_API_KEY: Optional[str] = None,
+        GOOGLE_CSE_ID: Optional[str] = None,
+        my_llm_service: Optional[MyLLMService] = None,
         scrape_concurrency: int = 8,
-    ):
-        # ── credentials (env fall-back) ──
-        self.openai_api_key   = _resolve("OPENAI_API_KEY",  OPENAI_API_KEY)
-        self.bright_token     = _resolve("BRIGHTDATA_TOKEN", BRIGHTDATA_TOKEN)
-        self.browser_user     = _resolve("BRIGHTDATA_BROWSERAPI_USERNAME", BRIGHTDATA_BROWSERAPI_USERNAME)
-        self.browser_pass     = _resolve("BRIGHTDATA_BROWSERAPI_PASSWORD", BRIGHTDATA_BROWSERAPI_PASSWORD)
-        self.unlock_bearer    = _resolve("BRIGHTDATA_WEBUNCLOKCER_BEARER", BRIGHTDATA_WEBUNCLOKCER_BEARER)
-        self.unlock_appzone   = _resolve("BRIGHTDATA_WEBUNCLOKCER_APP_ZONE_STRING", BRIGHTDATA_WEBUNCLOKCER_APP_ZONE_STRING)
-        self.google_api_key   = _resolve("GOOGLE_SEARCH_API_KEY", GOOGLE_SEARCH_API_KEY)
-        self.google_cse_id    = _resolve("GOOGLE_CSE_ID", GOOGLE_CSE_ID)
+    ) -> None:
+        # Resolve credentials (env‐fallback)
+        self.openai_api_key = _resolve("OPENAI_API_KEY", OPENAI_API_KEY)
+        self.bright_token = _resolve("BRIGHTDATA_TOKEN", BRIGHTDATA_TOKEN)
+        self.browser_user = _resolve(
+            "BRIGHTDATA_BROWSERAPI_USERNAME", BRIGHTDATA_BROWSERAPI_USERNAME
+        )
+        self.browser_pass = _resolve(
+            "BRIGHTDATA_BROWSERAPI_PASSWORD", BRIGHTDATA_BROWSERAPI_PASSWORD
+        )
+        self.unlock_bearer = _resolve(
+            "BRIGHTDATA_WEBUNCLOKCER_BEARER", BRIGHTDATA_WEBUNCLOKCER_BEARER
+        )
+        self.unlock_appzone = _resolve(
+            "BRIGHTDATA_WEBUNCLOKCER_APP_ZONE_STRING", BRIGHTDATA_WEBUNCLOKCER_APP_ZONE_STRING
+        )
+        self.google_api_key = _resolve("GOOGLE_SEARCH_API_KEY", GOOGLE_SEARCH_API_KEY)
+        self.google_cse_id = _resolve("GOOGLE_CSE_ID", GOOGLE_CSE_ID)
 
-        # ── shared LLM service ──
+        # Shared, rate-limited LLM
         self.llm = my_llm_service or MyLLMService()
 
-        # ── sub-components ──
+        # Subcomponents
         serp_cfg = serpengine_cfg or {}
         serp_cfg.setdefault("GOOGLE_SEARCH_API_KEY", self.google_api_key)
-        serp_cfg.setdefault("GOOGLE_CSE_ID",        self.google_cse_id)
+        serp_cfg.setdefault("GOOGLE_CSE_ID", self.google_cse_id)
+        self.serp = SERPEngine(**serp_cfg)
 
-        self.serp = SERPEngine(  **serp_cfg )
-        
         extr_cfg = extracthero_cfg or {}
-        self.extractor = ExtractHero(
-            llm=self.llm,
-            **extr_cfg
-        )
+        self.extractor = ExtractHero(llm=self.llm, **extr_cfg)
 
-        # ── internal controls ──
+        # Control concurrency of Bright Data jobs
         self._scrape_sem = asyncio.Semaphore(scrape_concurrency)
 
-    async def collect(
+        # Placeholders for intermediate state
+        self.search_op: Optional[SerpEngineOp] = None
+        self.scrape_results_dict: Dict[str, ScrapeResult] = {}
+        self.extract_ops: Dict[str, ExtractOp] = {}
+    
+    # ────────────────────────────── Helpers ──────────────────────────────
+    
+    def run_serpop(self, query: str, top_k: int) -> List[str]:
+        """Sync search → populate self.search_op & return links."""
+        self.search_op = self.serp.collect(
+            query=query, num_urls=top_k, output_format="object"
+        )
+        return self.search_op.all_links()
+
+    async def run_serpop_async(self, query: str, top_k: int) -> List[str]:
+        """Async search → populate self.search_op & return links."""
+        self.search_op = await self.serp.collect_async(
+            query=query, num_urls=top_k, output_format="object"
+        )
+        return self.search_op.all_links()
+    
+    async def _scrape_one(
+        self,
+        url: str,
+        *,
+        poll_interval: int,
+        poll_timeout: int,
+        fallback_to_browser_api: bool,
+        on_progress: Callable[[str, dict], None] | None,
+    ) -> Any | None:
+        """Internal: trigger & poll one URL."""
+        async with self._scrape_sem:
+            res = await scrape_urls_async(
+                [url],
+                bearer_token=self.bright_token,
+                poll_interval=poll_interval,
+                poll_timeout=poll_timeout,
+                fallback_to_browser_api=fallback_to_browser_api,
+            )
+            sr = res[url]
+            self.scrape_results_dict[url] = sr
+            if on_progress and getattr(sr, "status", None) == "ready":
+                on_progress("scraped", {"url": url})
+            return sr.data if getattr(sr, "status", None) == "ready" else None
+
+    async def _extract_one(
+        self,
+        url: str,
+        raw: Any,
+        schema: List[WhatToRetain],
+        on_progress: Callable[[str, dict], None] | None,
+    ) -> Any:
+        """Internal: run ExtractHero.async on raw HTML/JSON."""
+        op = await self.extractor.extract_async(
+            raw,
+            schema,
+            text_type="html" if isinstance(raw, str) else "dict",
+        )
+        self.extract_ops[url] = op
+        if on_progress:
+            on_progress("extracted", {"url": url, "content": op.content})
+        return op.content
+
+    # ───────────────────────────── Public – Async ─────────────────────────
+
+    async def run(
         self,
         query: str,
-        schema: List[ItemToExtract],
+        schema: List[WhatToRetain],
         *,
-        top_k: int = 20,
+        top_k: int = 5,
         poll_interval: int = 8,
         poll_timeout: int = 180,
-    ) -> Dict[str, Any]:
+        fallback_to_browser_api: bool = False,
+        on_progress: Callable[[str, dict], None] | None = None,
+    ) -> ImputeOp:
+        """
+        Fully-async end-to-end run.
+        """
+        
+        self.run_custom_keyword_imputation()
+
         t0 = time.time()
-
-        # 1️⃣ Search
-        search_op = self.serp.collect(
-            query=query,
-            num_urls=top_k,
-            output_format="object",
-        )
-        urls: List[str] = search_op.all_links()
-        total = len(urls)
+        links = await self.run_serpop_async(query, top_k)
+        total = len(links)
         print(f"{total} links found; scraping started…")
-
-        # 2️⃣ Helpers
-        async def _scrape_one(url: str) -> Any | None:
-            async with self._scrape_sem:
-                res_map = await scrape_urls_async(
-                    [url],
-                    bearer_token=self.bright_token,
+        
+        tasks: Dict[asyncio.Task, str] = {
+            asyncio.create_task(
+                self._scrape_one(
+                    url,
                     poll_interval=poll_interval,
                     poll_timeout=poll_timeout,
-                    fallback_to_browser_api=False,
+                    fallback_to_browser_api=fallback_to_browser_api,
+                    on_progress=on_progress,
                 )
-                sr = res_map[url]
-                return sr.data if getattr(sr, "status", None) == "ready" else None
-
-        async def _extract_one(url: str, raw: Any) -> Any:
-            op = self.extractor.extract(
-                raw,
-                schema,
-                text_type="html" if isinstance(raw, str) else "dict",
-            )
-            return op.content
-
-        # 3️⃣ Spawn scrape tasks
-        scrape_tasks: Dict[asyncio.Task, str] = {
-            asyncio.create_task(_scrape_one(url)): url
-            for url in urls
+            ): url
+            for url in links
         }
 
-        # 4️⃣ Stream scrape → extract
-        extracted: Dict[str, Any] = {}
-        for i, task in enumerate(asyncio.as_completed(scrape_tasks), start=1):
-            url = scrape_tasks[task]
+        results: Dict[str, Any] = {}
+        for i, task in enumerate(asyncio.as_completed(tasks), start=1):
+            url = tasks[task]
             raw = await task
-            if raw is not None:
-                content = await _extract_one(url, raw)
-                extracted[url] = content
-                print(f"[{i}/{total}] {url!r} scraped and extracted.")
-            else:
-                print(f"[{i}/{total}] {url!r} scrape failed; skipping.")
+            if raw is None:
+                sr = self.scrape_results_dict.get(url)
+                print(f"[{i}/{total}] {url!r} ❌ scrape failed")
+                print(sr)
+                print(" ")
+                print(" ")
+                continue
+            content = await self._extract_one(url, raw, schema, on_progress)
+            results[url] = content
+            print(f"[{i}/{total}] {url!r} ✅ scraped & extracted")
 
         elapsed = round(time.time() - t0, 2)
-        return {
-            "query":   query,
-            "hits":    total,
-            "extracted": len(extracted),
-            "elapsed": elapsed,
-            "results": extracted,
-        }
+        return ImputeOp(
+            query=query,
+            schema=schema,
+            search_op=self.search_op,  # type: ignore
+            links=links,
+            scrape_results_dict=self.scrape_results_dict,
+            extract_ops=self.extract_ops,
+            hits=total,
+            extracted=len(results),
+            elapsed=elapsed,
+            results=results,
+        )
     
-    
-    def collect_sync(
+    # ───────────────────────────── Public – Sync ──────────────────────────
+
+    def run_sync(
         self,
         query: str,
-        schema: List[ItemToExtract],
+        schema: List[WhatToRetain],
         *,
-        top_k: int = 20,
+        top_k: int = 5,
         poll_interval: int = 8,
         poll_timeout: int = 180,
-    ) -> Dict[str, Any]:
+        fallback_to_browser_api: bool = True,
+    ) -> ImputeOp:
+        """
+        Blocking variant — convenient for quick tests or notebooks.
+        """
         t0 = time.time()
+        links = self.run_serpop(query, top_k)
+        total = len(links)
 
-        # 1️⃣ Search (sync)
-        search_op = self.serp.collect(
-            query=query,
-            num_urls=top_k,
-            output_format="object",
-        )
-        urls: List[str] = search_op.all_links()
-        total = len(urls)
+
+        print(" ") 
+
+        for e in links:
+            print(e)
+        
+        print(" ") 
         print(f"{total} links found; scraping started…")
-
-        # 2️⃣ Sequential scrape → extract
-        extracted: Dict[str, Any] = {}
-        for i, url in enumerate(urls, start=1):
+        
+        results: Dict[str, Any] = {}
+        for i, url in enumerate(links, start=1):
             print(f"[{i}/{total}] scraping {url}")
-            # scrape sync
-
             sr = scrape_url(
                 url,
                 bearer_token=self.bright_token,
                 poll_interval=poll_interval,
                 poll_timeout=poll_timeout,
-                fallback_to_browser_api=True,
+                fallback_to_browser_api=fallback_to_browser_api,
             )
-            # res_map = scrape_urls(
-            #     [url],
-            #     bearer_token=self.bright_token,
-            #     poll_interval=poll_interval,
-            #     poll_timeout=poll_timeout,
-            #     fallback=False,
-            # )
-            # sr = res_map.get(url)
-            if getattr(sr, "status", None) == "ready":
-                raw = sr.data
-                print(f"  → scraped, extracting…")
-                op = self.extractor.extract(
-                    raw,
-                    schema,
-                    text_type="html" if isinstance(raw, str) else "dict",
-                )
-                extracted[url] = op.content
-                print(f"  ✔ extracted")
-            else:
-                print(f"  ✖ scrape failed ({getattr(sr, 'error', 'unknown')}); skipping")
+            self.scrape_results_dict[url] = sr
+            if getattr(sr, "status", None) != "ready":
+                print("   ✖ scrape failed; skipping")
+                print(sr)
+                print(" ")
+                print(" ")
+                continue
+    #           html_char_size: int | None = None
+    # row_count: Optional[int] = None
+    # field_count: Optional[int] = None
+            print("   → scraped:")
+            print(f" html_char_size: {sr.html_char_size}, row_count: {sr.row_count}, field_count : {sr.field_count}, cost : {sr.cost}")
+            print(" ")
+            print("Extracting…")
+            op = self.extractor.extract(
+                sr.data,
+                schema,
+                text_type="html" if isinstance(sr.data, str) else "dict",
+            )
+            print("Extracted:")
 
+
+#  success: bool                   # Whether filtering succeeded
+#     content: Any                    # The filtered corpus (text) for parsing
+#     usage: Optional[Dict[str, Any]] # LLM usage stats (tokens, cost, etc.)
+#     elapsed_time: float             # Time in seconds that the filter step took
+#     config: ExtractConfig           # The ExtractConfig used for this filter run
+#     reduced_html: Optional[str]     # Reduced HTML (if HTMLReducer was applied)
+#     html_reduce_op:     Optional[Any] = None   # holds the full Domreducer ReduceOperation object
+
+
+# class ReduceOperation:
+#     # ── required (no defaults) ──────────────────────────────────
+#     success: bool
+#     js_method_needed: bool
+#     total_char: int
+#     total_token: int
+#     raw_data: str
+
+#     # ── optional (have defaults) ────────────────────────────────
+#     reduced_data: Optional[str] = None
+#     reduced_total_char: Optional[int] = None
+#     reduced_total_token: Optional[int] = None
+#     token_reducement_percentage: Optional[float] = None
+#     error: Optional[str] = None
+#     reducement_details: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
+
+            # op.filter_op.html_reduce_op.total_token
+
+            print(f"html_token_reduction: {op.filter_op.html_reduce_op.total_token}->>>{op.filter_op.html_reduce_op.reduced_total_token}")
+            print(f"filtering elapsed_time: {op.filter_op.elapsed_time}")
+            print(f"parser elapsed_time: {op.parse_op.elapsed_time}")
+            
+          
+
+            print("   → extraction finished")
+            self.extract_ops[url] = op
+            results[url] = op.content
+            print("   ✔ extracted")
+        
         elapsed = round(time.time() - t0, 2)
-        return {
-            "query":     query,
-            "hits":      total,
-            "extracted": len(extracted),
-            "elapsed":   elapsed,
-            "results":   extracted,
-        }
+        return ImputeOp(
+            query=query,
+            schema=schema,
+            search_op=self.search_op,  # type: ignore
+            links=links,
+            scrape_results_dict=self.scrape_results_dict,
+            extract_ops=self.extract_ops,
+            hits=total,
+            extracted=len(results),
+            elapsed=elapsed,
+            results=results,
+        )
 
+
+# ─────────────────────────── CLI SMOKE-TEST ────────────────────────────
+
+if __name__ == "__main__":
+
+    
+    schema = [
+        
+        WhatToRetain(
+            name="attributes",
+            desc="all technical attributes",
+            # example="OpenAI launches GPT-4",
+        ),
+        # WhatToRetain(
+        #     name="headline",
+        #     desc="Main story headline",
+        #     example="OpenAI launches GPT-4",
+        # ),
+        # WhatToRetain(
+        #     name="published_date",
+        #     desc="Publication date (ISO-8601)",
+        #     regex_validator=r"\d{4}-\d{2}-\d{2}",
+        #     example="2025-06-01",
+        # ),
+    ]
+
+    
+    # schema = [
+    #     WhatToRetain(
+    #         name="life_story",
+    #         desc="life story in terms of what/how/when a person did",
+    #         # example="OpenAI launches new model",
+    #     )
+       
+    # ]
+
+
+
+    # schema = [
+    #     WhatToRetain(
+    #         name="packaging",
+    #         desc="used in electronical components to state ",
+    #         # example="OpenAI launches new model",
+    #     )
+       
+    # ]
+    
+    
+    iman = Imputeman()
+    
+    impute_op = iman.run_sync("bav99", schema=schema, top_k=1)
+    # print(impute_op.results)
+    
+    
+    
+    print(impute_op)

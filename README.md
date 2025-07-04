@@ -56,3 +56,84 @@
   3. **Extract:** raw data → structured JSON
 * Single entry points (`collect_sync` or async `collect`) replace complex, multi-step boilerplate.
 
+
+
+## ImputeHub
+
+**ImputeHub** is the central coordinator for running large-scale, concurrent scraping pipelines powered by Imputeman. It manages job submission, global rate-limits, shared resources and result aggregation across hundreds or thousands of tasks.
+
+### Core Responsibilities
+
+1. **Job Registry**
+
+   * Accepts new scraping jobs (query + extraction schema + options).
+   * Assigns each job a unique ID for tracking and cancellation.
+
+2. **Global Rate-Limiting**
+
+   * Maintains a single **Bright Data semaphore** to cap concurrent snapshots.
+   * Maintains a single **LLM semaphore** (via shared `MyLLMService`) to cap concurrent API calls.
+   * Ensures no Imputeman instance exceeds plan quotas.
+
+3. **Worker Pool**
+
+   * Spawns a configurable number of async workers.
+   * Each worker pulls jobs from an `asyncio.Queue`, instantiates an Imputeman, injects shared semaphores, and runs `collect()`.
+   * Handles individual job retries, failures and backoff.
+
+4. **Shared Resources**
+
+   * **One** `MyLLMService` for all LLM operations (semantic filters, parsing).
+   * **One** `aiohttp.ClientSession` inside Bright Data helpers to reuse TCP connections.
+   * Credential/config overrides applied once at ImputeHub init.
+
+5. **Result Aggregation & Metrics**
+
+   * Collects per-job outputs and errors in a results queue.
+   * Streams metrics (cost, latency, success-rate) to logs or a metrics endpoint (e.g. Prometheus).
+   * Provides `.run_all()` for batch execution or `.submit_job()`/`.get_result()` for streaming.
+
+6. **Operational Control**
+
+   * Exposes methods to **pause**, **resume**, or **cancel** specific jobs or the entire queue.
+   * Supports dynamic scaling of worker pool size and semaphore limits at runtime.
+
+---
+
+### High-Level API
+
+```python
+from imputehub import ImputeHub, JobConfig, ItemToExtract
+
+hub = ImputeHub(
+    max_bright_concurrency=50,
+    max_llm_concurrency=25,
+    worker_pool_size=20,
+    google_key="…",
+    bright_token="…",
+    openai_key="…"
+)
+
+schema = [ItemToExtract(name="title", desc="Page title")]
+
+# Submit jobs
+for q in queries:
+    hub.submit_job(JobConfig(query=q, schema=schema, top_k=5))
+
+# Run them all and gather results
+import asyncio
+results = asyncio.run(hub.run_all())
+# results: List[Tuple[job_id, output_dict]]
+```
+
+---
+
+### Why Use ImputeHub?
+
+* **Scalability:** Orchestrate thousands of parallel pipelines without exceeding external API rate-limits.
+* **Simplicity:** One place to configure credentials, concurrency and worker count.
+* **Resilience:** Per-job isolation and retry logic prevent cascading failures.
+* **Observability:** Centralized metrics and logging for cost, performance, and error rates.
+* **Control:** Pause/resume or cancel in-flight jobs; adjust throughput on-the-fly.
+
+
