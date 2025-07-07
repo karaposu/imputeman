@@ -28,12 +28,12 @@ class ScrapeConfig:
     max_retries: int = 3
     retry_delay_seconds: int = 5
     timeout_seconds: float = 60.0
-    concurrent_limit: int = 5
+    concurrent_limit: int = 500
     rate_limit_per_minute: Optional[int] = 60
     use_browser_fallback: bool = True
     max_cost_threshold: float = 100.0  # Dollar amount
     bearer_token: Optional[str] = None
-    poll_interval: float = 2.0
+    poll_interval: float = 10.0
     poll_timeout: float = 120.0
     
     def __post_init__(self):

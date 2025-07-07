@@ -1,56 +1,39 @@
 # imputeman/services/scraper_service.py
-"""Web scraping service for extracting HTML content from URLs"""
+"""Web scraping service using BrightData exclusively"""
 
 import asyncio
-import httpx
-import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor
-import json
 
+# Use BrightData's ScrapeResult directly
+from brightdata.models import ScrapeResult
 from ..core.config import ScrapeConfig
-from ..core.entities import ScrapeResult
 
 
 class ScraperService:
     """
-    Service for handling web scraping operations
+    Service for handling web scraping operations using BrightData exclusively
     
-    This service abstracts away the details of different scraping methods
-    and provides a consistent interface for content extraction.
+    All scraping goes through BrightData for consistent, high-quality results.
     """
     
     def __init__(self, config: ScrapeConfig):
         self.config = config
-        self.session = httpx.AsyncClient(
-            timeout=httpx.Timeout(self.config.timeout_seconds),
-            headers=self._get_default_headers(),
-            follow_redirects=True,
-            limits=httpx.Limits(max_connections=config.concurrent_limit)
-        )
         self._executor = ThreadPoolExecutor(max_workers=config.concurrent_limit)
-    
-    def _get_default_headers(self) -> Dict[str, str]:
-        """Get default headers for web requests"""
-        return {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-        }
     
     async def scrape_urls(self, urls: List[str]) -> Dict[str, ScrapeResult]:
         """
-        Scrape multiple URLs concurrently
+        Scrape multiple URLs using BrightData with real cost tracking
         
         Args:
             urls: List of URLs to scrape
             
         Returns:
-            Dictionary mapping URLs to ScrapeResult objects
+            Dictionary mapping URLs to BrightData ScrapeResult objects
         """
+        if not urls:
+            return {}
+        
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.config.concurrent_limit)
         
@@ -60,283 +43,149 @@ class ScraperService:
             for url in urls
         ]
         
-        # Execute all tasks concurrently
+        # Wait for all tasks to complete
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Process results
+        # Build results dictionary
         scrape_results = {}
         for url, result in zip(urls, results):
             if isinstance(result, Exception):
                 scrape_results[url] = ScrapeResult(
+                    success=False,
                     url=url,
-                    data=None,
                     status="failed",
-                    error_message=str(result)
+                    data=None,
+                    error=f"Task exception: {str(result)}",
+                    cost=0.0
                 )
             else:
                 scrape_results[url] = result
         
+        # Log real cost summary
+        cost_summary = self.get_cost_summary(scrape_results)
+        print(f"   {cost_summary}")
+        
+        # Check against cost threshold using REAL costs
+        actual_costs = self.calculate_actual_costs(scrape_results)
+        if actual_costs['total_cost'] > self.config.max_cost_threshold:
+            print(f"   ⚠️  Actual cost ${actual_costs['total_cost']:.3f} exceeded threshold ${self.config.max_cost_threshold}")
+        
         return scrape_results
     
-    async def _scrape_single_url_with_semaphore(
-        self, 
-        url: str, 
-        semaphore: asyncio.Semaphore
-    ) -> ScrapeResult:
-        """Scrape single URL with semaphore for concurrency control"""
+    async def _scrape_single_url_with_semaphore(self, url: str, semaphore: asyncio.Semaphore) -> ScrapeResult:
+        """
+        Scrape a single URL with semaphore control using BrightData
+        
+        Args:
+            url: URL to scrape
+            semaphore: Asyncio semaphore for concurrency control
+            
+        Returns:
+            BrightData ScrapeResult for the URL
+        """
         async with semaphore:
-            return await self.scrape_single_url(url)
+            return await self._brightdata_scrape(url)
     
-    async def scrape_single_url(self, url: str) -> ScrapeResult:
+    async def _brightdata_scrape(self, url: str) -> ScrapeResult:
         """
-        Scrape a single URL and return structured result
+        Scrape using real BrightData service exclusively
         
         Args:
             url: URL to scrape
             
         Returns:
-            ScrapeResult with scraped content and metadata
+            BrightData ScrapeResult with real costs and data
         """
-        start_time = time.time()
-        
         try:
-            # First try simple HTTP request
-            result = await self._simple_scrape(url)
+            # Use real BrightData integration
+            from brightdata.auto import scrape_url_async
             
-            # If simple scrape fails and browser fallback is enabled, try browser
-            if (result.status != "ready" and 
-                self.config.use_browser_fallback and 
-                self.config.bearer_token):
-                result = await self._browser_scrape(url)
+            print(f"   🌐 Using BrightData for: {url}")
             
-            # Calculate final metrics
-            result.elapsed_time = time.time() - start_time
-            return result
-            
-        except Exception as e:
-            elapsed_time = time.time() - start_time
-            return ScrapeResult(
-                url=url,
-                data=None,
-                status="failed",
-                elapsed_time=elapsed_time,
-                error_message=f"Scraping failed: {str(e)}"
+            # Call actual BrightData service with increased timeout
+            brightdata_result = await scrape_url_async(
+                url,
+                bearer_token=self.config.bearer_token,
+                poll_interval=self.config.poll_interval,
+                poll_timeout=200,  # Increased timeout to 200 seconds
+                fallback_to_browser_api=True,
             )
-    
-    async def _simple_scrape(self, url: str) -> ScrapeResult:
-        """
-        Simple HTTP scraping using httpx
-        
-        Args:
-            url: URL to scrape
             
-        Returns:
-            ScrapeResult with content or error
-        """
-        try:
-            response = await self.session.get(url)
-            
-            # Check if request was successful
-            if response.status_code != 200:
+            # Return BrightData result directly (no field mapping needed!)
+            if brightdata_result:
+                return brightdata_result
+            else:
+                # Create failed result if BrightData returns None
                 return ScrapeResult(
+                    success=False,
                     url=url,
-                    data=None,
                     status="failed",
-                    error_message=f"HTTP {response.status_code}: {response.reason_phrase}"
+                    data=None,
+                    error="BrightData returned None",
+                    cost=0.0
                 )
             
-            # Get content
-            html_content = response.text
-            
-            # Basic content validation
-            if not html_content or len(html_content.strip()) < 100:
-                return ScrapeResult(
-                    url=url,
-                    data=None,
-                    status="failed",
-                    error_message="Content too short or empty"
-                )
-            
-            # Estimate basic metrics
-            char_size = len(html_content)
-            row_count = html_content.count('<tr>') or html_content.count('<p>') or 1
-            field_count = html_content.count('<td>') or html_content.count('<span>') or 5
-            
+        except ImportError:
             return ScrapeResult(
+                success=False,
                 url=url,
-                data=html_content,
-                status="ready",
-                html_char_size=char_size,
-                row_count=row_count,
-                field_count=field_count,
-                cost=0.0,  # Simple scraping is free
-                metadata={
-                    "method": "simple_http",
-                    "content_type": response.headers.get("content-type", "unknown"),
-                    "response_size": len(response.content)
-                }
-            )
-            
-        except httpx.TimeoutException:
-            return ScrapeResult(
-                url=url,
+                status="failed",
                 data=None,
-                status="timeout",
-                error_message="Request timed out"
+                error="BrightData module not available - install brightdata package",
+                cost=0.0
             )
         except Exception as e:
             return ScrapeResult(
+                success=False,
                 url=url,
-                data=None,
                 status="failed",
-                error_message=f"Simple scrape error: {str(e)}"
+                data=None,
+                error=f"BrightData error: {str(e)}",
+                cost=0.0
             )
     
-    async def _browser_scrape(self, url: str) -> ScrapeResult:
+    def calculate_actual_costs(self, scrape_results: Dict[str, ScrapeResult]) -> Dict[str, float]:
         """
-        Browser-based scraping using external service (like Bright Data)
-        
-        This is where you'd integrate with your existing scrape_url function
-        that uses bearer tokens and browser APIs.
+        Calculate actual costs from BrightData scraping results
         
         Args:
-            url: URL to scrape with browser
+            scrape_results: Dictionary of URL -> BrightData ScrapeResult
             
         Returns:
-            ScrapeResult with browser-scraped content
+            Dictionary with cost metrics
         """
-        try:
-            # TODO: Replace this with your actual browser scraping implementation
-            # Example integration:
-            # result = await scrape_url(
-            #     url,
-            #     bearer_token=self.config.bearer_token,
-            #     poll_interval=self.config.poll_interval,
-            #     poll_timeout=self.config.poll_timeout,
-            #     fallback_to_browser_api=True,
-            # )
-            # return self._convert_to_scrape_result(result, url)
-            
-            # Placeholder implementation for browser scraping
-            await asyncio.sleep(2.0)  # Simulate browser processing time
-            
-            # Simulate API call to browser service
-            browser_data = await self._simulate_browser_api_call(url)
-            
-            return ScrapeResult(
-                url=url,
-                data=browser_data["html"],
-                status=browser_data["status"],
-                html_char_size=browser_data.get("html_char_size"),
-                row_count=browser_data.get("row_count"),
-                field_count=browser_data.get("field_count"),
-                cost=browser_data.get("cost", 0.5),  # Browser scraping has cost
-                metadata={
-                    "method": "browser_scraping",
-                    "service": "bright_data",
-                    "js_rendered": True
-                }
-            )
-            
-        except Exception as e:
-            return ScrapeResult(
-                url=url,
-                data=None,
-                status="failed",
-                error_message=f"Browser scrape error: {str(e)}"
-            )
-    
-    async def _simulate_browser_api_call(self, url: str) -> Dict[str, Any]:
-        """
-        Simulate browser API call - replace with your actual implementation
-        
-        This represents the call to your browser scraping service
-        """
-        # Simulate different outcomes
-        import random
-        
-        if random.random() < 0.1:  # 10% failure rate
-            return {
-                "status": "failed",
-                "html": None,
-                "error": "Browser timeout"
-            }
-        
-        # Simulate successful scraping
-        mock_html = f"""
-        <html>
-        <head><title>Page from {url}</title></head>
-        <body>
-            <h1>Company Information</h1>
-            <div class="company-details">
-                <p>Revenue: $50M</p>
-                <p>Founded: 2010</p>
-                <p>Employees: 200</p>
-            </div>
-            <table>
-                <tr><td>Metric</td><td>Value</td></tr>
-                <tr><td>Growth</td><td>15%</td></tr>
-            </table>
-        </body>
-        </html>
-        """
+        costs = [result.cost for result in scrape_results.values() if result.cost is not None]
+        successful_costs = [result.cost for result in scrape_results.values() 
+                           if result.success and result.cost is not None]
         
         return {
-            "status": "ready",
-            "html": mock_html,
-            "html_char_size": len(mock_html),
-            "row_count": 3,
-            "field_count": 6,
-            "cost": random.uniform(0.2, 1.0)
+            "total_cost": sum(costs),
+            "successful_scrapes_cost": sum(successful_costs),
+            "avg_cost_per_scrape": sum(costs) / len(costs) if costs else 0.0,
+            "avg_cost_per_successful": sum(successful_costs) / len(successful_costs) if successful_costs else 0.0,
+            "free_scrapes": sum(1 for result in scrape_results.values() if result.cost == 0.0),
+            "paid_scrapes": sum(1 for result in scrape_results.values() if result.cost and result.cost > 0.0),
+            "cost_unknown": sum(1 for result in scrape_results.values() if result.cost is None)
         }
-    
-    def estimate_cost(self, urls: List[str]) -> float:
+
+    def get_cost_summary(self, scrape_results: Dict[str, ScrapeResult]) -> str:
         """
-        Estimate scraping cost for a list of URLs
+        Get a human-readable cost summary for BrightData results
         
         Args:
-            urls: List of URLs to estimate cost for
+            scrape_results: Dictionary of URL -> BrightData ScrapeResult
             
         Returns:
-            Estimated total cost in dollars
+            Formatted cost summary string
         """
-        # Simple scraping is free, browser scraping has cost
-        if self.config.use_browser_fallback:
-            # Assume 70% will need browser scraping
-            browser_scrape_count = len(urls) * 0.7
-            return browser_scrape_count * 0.5  # $0.50 per browser scrape
-        else:
-            return 0.0  # Simple HTTP scraping is free
-    
-    def _convert_to_scrape_result(self, external_result: Any, url: str) -> ScrapeResult:
-        """
-        Convert external scraping service result to ScrapeResult
+        costs = self.calculate_actual_costs(scrape_results)
         
-        This is where you'd convert the result from your existing scrape_url
-        function to the ScrapeResult format.
-        
-        Args:
-            external_result: Result from your existing scraping function
-            url: URL that was scraped
-            
-        Returns:
-            ScrapeResult object
-        """
-        # TODO: Implement based on your existing scrape result format
-        # Example:
-        # return ScrapeResult(
-        #     url=url,
-        #     data=external_result.data,
-        #     status=external_result.status,
-        #     html_char_size=external_result.html_char_size,
-        #     row_count=external_result.row_count,
-        #     field_count=external_result.field_count,
-        #     cost=external_result.cost,
-        #     metadata={"external_service": True}
-        # )
-        pass
+        return (
+            f"💰 Cost Summary: "
+            f"${costs['total_cost']:.3f} total "
+            f"({costs['paid_scrapes']} paid, {costs['free_scrapes']} free, {costs['cost_unknown']} unknown)"
+        )
     
     async def close(self):
         """Clean up resources"""
-        await self.session.aclose()
         self._executor.shutdown(wait=True)

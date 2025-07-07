@@ -4,6 +4,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+from brightdata.models import ScrapeResult
 
 
 @dataclass
@@ -38,19 +39,19 @@ class SerpResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class ScrapeResult:
-    """Result from web scraping operation"""
-    url: str
-    data: Optional[str]
-    status: str  # "ready", "failed", "timeout", etc.
-    html_char_size: Optional[int] = None
-    row_count: Optional[int] = None
-    field_count: Optional[int] = None
-    cost: float = 0.0
-    elapsed_time: float = 0.0
-    error_message: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+# @dataclass
+# class ScrapeResult:
+#     """Result from web scraping operation"""
+#     url: str
+#     data: Optional[str]
+#     status: str  # "ready", "failed", "timeout", etc.
+#     html_char_size: Optional[int] = None
+#     row_count: Optional[int] = None
+#     field_count: Optional[int] = None
+#     cost: float = 0.0
+#     elapsed_time: float = 0.0
+#     error_message: Optional[str] = None
+#     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
