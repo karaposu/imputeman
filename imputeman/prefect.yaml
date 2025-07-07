@@ -1,0 +1,87 @@
+# Prefect configuration for Imputeman
+
+# Project configuration
+name: imputeman
+prefect-version: 2.14.0
+
+# Build configuration
+build:
+  - prefect.deployments.steps.run_shell_script:
+      id: get-commit-hash
+      script: git rev-parse --short HEAD
+      stream_output: false
+
+# Push configuration for storing flow code
+push:
+  - prefect_docker.deployments.steps.build_docker_image:
+      id: build-image
+      requires: prefect-docker>=0.3.0
+      image_name: "{{ $PREFECT_IMAGE_NAME or 'imputeman' }}"
+      tag: "{{ get-commit-hash.stdout }}"
+      dockerfile: auto
+      platform: "linux/amd64"
+
+# Pull configuration for retrieving flow code  
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /opt/prefect/imputeman
+
+# Deployment configurations
+deployments:
+  # Local development deployment
+  - name: imputeman-dev
+    entrypoint: imputeman/flows/main_flow.py:imputeman_flow
+    description: "Imputeman pipeline for development"
+    tags:
+      - development
+      - imputeman
+    parameters:
+      config: null  # Uses default config
+    work_pool:
+      name: default-agent-pool
+    schedule: null  # No automatic scheduling
+    
+  # Simple pipeline deployment  
+  - name: imputeman-simple
+    entrypoint: imputeman/flows/main_flow.py:simple_imputeman_flow
+    description: "Simplified Imputeman pipeline"
+    tags:
+      - simple
+      - imputeman
+    parameters:
+      top_k: 5
+    work_pool:
+      name: default-agent-pool
+    schedule: null
+
+# Work pool configurations
+work_pools:
+  - name: imputeman-pool
+    type: process
+    base_job_template:
+      job_configuration:
+        command: "{{ command }}"
+        env: "{{ env }}"
+        labels: "{{ labels }}"
+      variables:
+        type: object
+        properties:
+          command:
+            type: array
+            default: []
+          env:
+            type: object
+            default: {}
+          labels:
+            type: object  
+            default: {}
+
+# Environment variables for configuration
+env:
+  PREFECT_API_URL: "{{ $PREFECT_API_URL or 'http://localhost:4200/api' }}"
+  PREFECT_LOGGING_LEVEL: "{{ $PREFECT_LOGGING_LEVEL or 'INFO' }}"
+  
+  # API keys (set these in your environment)
+  SERP_API_KEY: "{{ $SERP_API_KEY }}"
+  BRIGHT_DATA_TOKEN: "{{ $BRIGHT_DATA_TOKEN }}"
+  OPENAI_API_KEY: "{{ $OPENAI_API_KEY }}"

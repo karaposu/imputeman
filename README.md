@@ -1,139 +1,350 @@
+# Imputeman 
 
-## Imputeman
+AI powered context aware data imputation pipeline
 
-**Imputeman** is a high-level orchestrator that glues together three core capabilities—**search**, **scrape** and **extract**—into a single, easy-to-use library. Its underlying structure is intentionally built upon Google Search, BrightData and OpenAI paid APIs to make it a production-ready data imputation package.
+imputeman is build upon 5 modules
 
-### Submodules & Roles
-
-1. **`serpengine` (SERPEngine)**
-
-   * **Purpose:** Discover relevant URLs for a natural-language query.
-   * **How it works:**
-
-     * Calls Google Custom Search API or scrapes Google HTML results.
-     * Applies regex, domain or semantic LLM filters.
-     * Returns a `SerpEngineOp` with links, cost metrics and per-source stats.
-
-2. **`brightdata.auto` (`scrape_url` / `scrape_urls_async`)**
-   
-   * **Purpose:** Fetch raw HTML or JSON from each URL.
-   * **How it works:**
-
-     * Routes to the correct Bright Data scraper module (Amazon, LinkedIn, etc.) based on URL patterns.
-     * Triggers and polls snapshot jobs, returning either structured rows or raw HTML.
-     * Falls back to a Playwright-based Brightdata `BrowserAPI` for unsupported or blocked pages.
-
-3. **`extracthero` (ExtractHero + FilterHero + ParseHero)**
-
-   * **Purpose:** Extract structured fields from raw page content.
-   * **How it works:**
-
-     * **Filter phase:**
-
-       * If data is raw HTML, a custom HTML reducer shortens tags without disturbing underlying content.
-       * Data can be JSON or string; the LLM is queried to filter only the relevant parts.
-     * **Parse phase:** Converts filtered text into key–value pairs, applies regex validation, and returns an `ExtractOp`.
-   * **Schema:** You supply a `List[ItemToExtract]` defining field names, descriptions, example values, and optional regex validators.
-
-4. **`LLMService`**
-
-   * **Purpose:** Unified LLM gateway for all LLM based semantic operations.
-   * **How it works:**
-     * myllmservice.py holds all LLM call logic 
-     * GenerationRequest objects are created and GenerationResult objects are received which contains
-     query results and all relevant metadata such as cost and timestamps etc 
-     * Since all LLM call goes through one layer, it controls/manages global RPM/TPM and concurrency limits.
- 
-
----
-
-## Overall Purpose
-
-* **End-to-end data pipeline** in one class:
-
-  1. **Search:** natural-language query → list of URLs
-  2. **Scrape:** URLs → raw page data
-  3. **Extract:** raw data → structured JSON
-* Single entry points (`collect_sync` or async `collect`) replace complex, multi-step boilerplate.
+SerpEngine for link collection
+Brightdata for scraping
+Extracthero for information extraction
+Prefect for pipeline orchestration. 
 
 
+## Features
 
-## ImputeHub
+- 🔍 **Intelligent Search**: SERP API integration for finding relevant data sources
+- 🕷️ **Robust Web Scraping**: Concurrent scraping with retry logic and cost monitoring  
+- 🧠 **AI-Powered Extraction**: Structured data extraction using LLMs
+- 🌊 **Conditional Workflows**: Dynamic pipeline routing based on cost, quality, and success metrics
+- 💰 **Cost-Aware**: Budget-conscious scraping modes and cost monitoring
+- 🔄 **Retry Logic**: Configurable retry strategies for each pipeline stage
+- 📊 **Rich Observability**: Detailed logging, metrics, and Prefect UI integration
 
-**ImputeHub** is the central coordinator for running large-scale, concurrent scraping pipelines powered by Imputeman. It manages job submission, global rate-limits, shared resources and result aggregation across hundreds or thousands of tasks.
+## Quick Start
 
-### Core Responsibilities
+### Installation
 
-1. **Job Registry**
+```bash
+# Install the package
+pip install -e .
 
-   * Accepts new scraping jobs (query + extraction schema + options).
-   * Assigns each job a unique ID for tracking and cancellation.
+# Install with development dependencies
+pip install -e ".[dev]"
 
-2. **Global Rate-Limiting**
-
-   * Maintains a single **Bright Data semaphore** to cap concurrent snapshots.
-   * Maintains a single **LLM semaphore** (via shared `MyLLMService`) to cap concurrent API calls.
-   * Ensures no Imputeman instance exceeds plan quotas.
-
-3. **Worker Pool**
-
-   * Spawns a configurable number of async workers.
-   * Each worker pulls jobs from an `asyncio.Queue`, instantiates an Imputeman, injects shared semaphores, and runs `collect()`.
-   * Handles individual job retries, failures and backoff.
-
-4. **Shared Resources**
-
-   * **One** `MyLLMService` for all LLM operations (semantic filters, parsing).
-   * **One** `aiohttp.ClientSession` inside Bright Data helpers to reuse TCP connections.
-   * Credential/config overrides applied once at ImputeHub init.
-
-5. **Result Aggregation & Metrics**
-
-   * Collects per-job outputs and errors in a results queue.
-   * Streams metrics (cost, latency, success-rate) to logs or a metrics endpoint (e.g. Prometheus).
-   * Provides `.run_all()` for batch execution or `.submit_job()`/`.get_result()` for streaming.
-
-6. **Operational Control**
-
-   * Exposes methods to **pause**, **resume**, or **cancel** specific jobs or the entire queue.
-   * Supports dynamic scaling of worker pool size and semaphore limits at runtime.
-
----
-
-### High-Level API
-
-```python
-from imputehub import ImputeHub, JobConfig, ItemToExtract
-
-hub = ImputeHub(
-    max_bright_concurrency=50,
-    max_llm_concurrency=25,
-    worker_pool_size=20,
-    google_key="…",
-    bright_token="…",
-    openai_key="…"
-)
-
-schema = [ItemToExtract(name="title", desc="Page title")]
-
-# Submit jobs
-for q in queries:
-    hub.submit_job(JobConfig(query=q, schema=schema, top_k=5))
-
-# Run them all and gather results
-import asyncio
-results = asyncio.run(hub.run_all())
-# results: List[Tuple[job_id, output_dict]]
+# Start Prefect server (optional, for UI)
+prefect server start
 ```
 
----
+### Basic Usage
 
-### Why Use ImputeHub?
+```python
+import asyncio
+from imputeman.core.entities import EntityToImpute, WhatToRetain
+from imputeman.flows.main_flow import simple_imputeman_flow
 
-* **Scalability:** Orchestrate thousands of parallel pipelines without exceeding external API rate-limits.
-* **Simplicity:** One place to configure credentials, concurrency and worker count.
-* **Resilience:** Per-job isolation and retry logic prevent cascading failures.
-* **Observability:** Centralized metrics and logging for cost, performance, and error rates.
-* **Control:** Pause/resume or cancel in-flight jobs; adjust throughput on-the-fly.
+async def main():
+    # Create entity to research - bav99 is an electronic component part number
+    entity = EntityToImpute(
+        name="bav99",
+        identifier_context="electronic component part number",
+        impute_task_purpose="component specification research"
+    )
+    
+    # Define expected data schema using WhatToRetain
+    # Extract technical specifications we DON'T already know
+    schema = [
+        WhatToRetain(
+            name="component_type",
+            desc="Type of electronic component",
+            example="NPN transistor"
+        ),
+        WhatToRetain(
+            name="voltage_rating", 
+            desc="Maximum voltage rating in volts",
+            example="75V"
+        ),
+        WhatToRetain(
+            name="package_type",
+            desc="Physical package type",
+            example="SOT-23"
+        )
+    ]
+    
+    # Run pipeline
+    result = await simple_imputeman_flow(entity, schema, top_k=5)
+    
+    if result.success:
+        print(f"✅ Success! Extracted data: {result.final_data}")
+    else:
+        print(f"❌ Failed: {result.metadata.get('error', 'Unknown error')}")
 
+# Run the pipeline
+asyncio.run(main())
+```
 
+### Environment Setup
+
+Create a `.env` file with your API keys:
+
+```bash
+# Search API
+SERP_API_KEY=your_serp_api_key
+
+# Web scraping
+BRIGHT_DATA_TOKEN=your_bright_data_token
+
+# AI extraction  
+OPENAI_API_KEY=your_openai_api_key
+
+# Prefect (optional)
+PREFECT_API_URL=http://localhost:4200/api
+```
+
+## Use Cases
+
+Imputeman can research and extract structured data for any type of entity:
+
+### **Electronic Components**
+```python
+entity = EntityToImpute(name="bav99")  # Component part number
+schema = [
+    WhatToRetain(name="component_type", desc="Type of electronic component"),
+    WhatToRetain(name="voltage_rating", desc="Maximum voltage rating"),
+    WhatToRetain(name="manufacturer", desc="Component manufacturer")
+]
+```
+
+### **Pharmaceutical Compounds**  
+```python
+entity = EntityToImpute(name="aspirin")  # Chemical compound
+schema = [
+    WhatToRetain(name="chemical_formula", desc="Chemical molecular formula"),
+    WhatToRetain(name="mechanism_of_action", desc="How the drug works"),
+    WhatToRetain(name="half_life", desc="Elimination half-life")
+]
+```
+
+### **Companies & Organizations**
+```python
+entity = EntityToImpute(name="OpenAI")  # Company name
+schema = [
+    WhatToRetain(name="current_valuation", desc="Current company valuation"),
+    WhatToRetain(name="employee_count", desc="Number of employees"),
+    WhatToRetain(name="latest_funding", desc="Most recent funding round")
+]
+```
+
+### **Research Papers, Patents, Materials, etc.**
+The pipeline works for any entity you can search for and want to extract structured data about.
+
+## Architecture
+
+### Pipeline Stages
+
+1. **Search (SERP)**: Find relevant URLs using search APIs
+2. **Scraping**: Extract HTML content from discovered URLs
+3. **Extraction**: Use AI to extract structured data from HTML
+4. **Aggregation**: Combine results into final dataset
+
+### Conditional Logic
+
+The pipeline includes intelligent branching:
+
+```python
+# Cost-based routing
+if scraping_cost > threshold:
+    → switch_to_budget_scraping()
+
+# Quality-based validation  
+if confidence < threshold:
+    → retry_with_relaxed_criteria()
+
+# Success-based continuation
+if successful_extractions < minimum:
+    → try_alternative_approach()
+```
+
+### Configuration
+
+Each stage is highly configurable:
+
+```python
+from imputeman.core.config import PipelineConfig, ScrapeConfig
+
+config = PipelineConfig()
+config.scrape_config.max_cost_threshold = 50.0
+config.extract_config.confidence_threshold = 0.8
+config.cost_threshold_for_budget_mode = 100.0
+
+result = await imputeman_flow(entity, schema, config)
+```
+
+## Advanced Usage
+
+### Custom Workflows
+
+```python
+from imputeman.flows.main_flow import imputeman_flow
+from imputeman.core.config import get_development_config
+from imputeman.core.entities import WhatToRetain
+
+# Use development config with custom settings
+config = get_development_config()
+config.serp_config.top_k_results = 15
+config.scrape_config.concurrent_limit = 8
+
+entity = EntityToImpute(
+    name="bc547",  # Electronic component
+    identifier_context="transistor part number", 
+    impute_task_purpose="component research"
+)
+
+schema = [
+    WhatToRetain(
+        name="component_type",
+        desc="Type of transistor",
+        example="NPN bipolar junction transistor"
+    ),
+    WhatToRetain(
+        name="max_collector_current",
+        desc="Maximum collector current rating",
+        example="100mA"
+    )
+]
+
+result = await imputeman_flow(entity, schema, config)
+```
+
+### Prefect Deployments
+
+Deploy your workflows for production:
+
+```bash
+# Deploy to Prefect
+prefect deploy --name imputeman-prod
+
+# Run deployed flow
+prefect deployment run 'imputeman-pipeline/imputeman-prod' \
+  --param entity='{"name": "bav99"}' \
+  --param schema='[{"name": "component_type", "desc": "Type of electronic component"}]'
+```
+
+### Monitoring & Observability
+
+The Prefect UI provides rich monitoring:
+
+- **Flow runs**: Track pipeline executions
+- **Task details**: See individual stage performance  
+- **Logs**: Detailed execution logs
+- **Metrics**: Cost, timing, and success rates
+- **Retries**: Automatic retry visualization
+
+Access the UI at `http://localhost:4200` after starting the Prefect server.
+
+## Configuration Options
+
+### Stage Configurations
+
+#### SERP Configuration
+- `max_retries`: Retry attempts for failed searches
+- `top_k_results`: Number of URLs to find
+- `timeout_seconds`: Search timeout
+- `rate_limit_per_minute`: API rate limiting
+
+#### Scrape Configuration  
+- `concurrent_limit`: Max parallel scraping requests
+- `max_cost_threshold`: Budget limit for scraping
+- `use_browser_fallback`: Enable browser-based scraping
+- `poll_timeout`: Max wait time for scraping completion
+
+#### Extract Configuration
+- `confidence_threshold`: Minimum confidence for valid extractions
+- `max_tokens`: Token limit for AI processing
+- `extraction_model`: AI model to use (gpt-4, gpt-3.5-turbo)
+
+### Pipeline Configuration
+- `cost_threshold_for_budget_mode`: When to switch to budget scraping
+- `min_successful_extractions`: Minimum extractions needed for success
+- `enable_caching`: Cache search and scrape results
+
+## Error Handling
+
+The pipeline gracefully handles various failure modes:
+
+- **Search failures**: Retry with backoff, return partial results
+- **Scraping failures**: Individual URL failures don't stop the pipeline
+- **Extraction failures**: Continue with successful extractions
+- **Cost overruns**: Automatically switch to budget mode
+- **Quality issues**: Retry with relaxed thresholds
+
+## Development
+
+### Project Structure
+
+```
+imputeman/
+├── core/           # Data models and configuration
+├── tasks/          # Prefect tasks for each stage
+├── flows/          # Workflow orchestration
+├── services/       # External service integrations
+└── utils/          # Utilities and helpers
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=imputeman
+
+# Run specific test category
+pytest tests/test_tasks.py -v
+```
+
+### Code Quality
+
+```bash
+# Format code
+black imputeman/
+
+# Lint code  
+ruff check imputeman/
+
+# Type checking
+mypy imputeman/
+```
+
+## Migrating from Legacy Code
+
+If you have existing Imputeman code, migration is straightforward:
+
+### Before (Legacy)
+```python
+iman = Imputeman()
+impute_op = iman.run_sync("bav99", schema=schema, top_k=1)
+print(impute_op.results)
+```
+
+### After (Prefect)
+```python
+from imputeman.core.entities import EntityToImpute, WhatToRetain
+
+entity = EntityToImpute(name="bav99")
+schema = [
+    WhatToRetain(
+        name="component_type",
+        desc="Type of electronic component"
+    )
+]
+result = await simple_imputeman_flow(entity, schema, top_k=1)
+print(result.final_data)
+```
+
+### Key Changes
+- **EntityToImpute dataclass** instead of raw strings
+- **Async/await** for better performance
+- **Rich result objects** with detailed metadata
+- **Configurable pipeline** stages
+- **Built-in observability** and monitoring

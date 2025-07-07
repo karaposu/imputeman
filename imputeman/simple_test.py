@@ -26,12 +26,12 @@ def main():
         # BRIGHTDATA_TOKEN="YOUR_BRIGHTDATA_TOKEN",
         scrape_concurrency=40,
     )
-
+    
     # Run synchronous pipeline for a sample query
     query = "OpenAI GPT-4 release date"
     print(f"Running collect_sync for query: '{query}'\n")
     result = man.collect_sync(query, schema, top_k=3)
-
+    
     # Display the results
     print("\n=== collect_sync Result ===")
     print(result)

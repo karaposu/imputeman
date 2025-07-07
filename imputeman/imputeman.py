@@ -18,25 +18,7 @@ from imputeman.myllmservice import MyLLMService
 from imputeman.utils import _resolve
 
 
-@dataclass
-class ImputeOp:
-    """
-    Encapsulates one end-to-end run of Imputeman:
-      - the original query & schema
-      - the raw SERP & link list
-      - per-URL scrape & extract results
-      - summary metrics
-    """
-    query: str
-    schema: List[WhatToRetain]
-    search_op: SerpEngineOp
-    links: List[str]
-    scrape_results_dict: Dict[str, ScrapeResult]
-    extract_ops: Dict[str, ExtractOp]
-    hits: int
-    extracted: int
-    elapsed: float
-    results: Dict[str, Any]
+from imputeman.models import ImputeOp, EntityToImpute
 
 
 class Imputeman:
@@ -231,24 +213,19 @@ class Imputeman:
         )
     
     # ───────────────────────────── Public – Sync ──────────────────────────
-
-    def run_sync(
-        self,
-        query: str,
-        schema: List[WhatToRetain],
-        *,
-        top_k: int = 5,
-        poll_interval: int = 8,
-        poll_timeout: int = 180,
-        fallback_to_browser_api: bool = True,
-    ) -> ImputeOp:
+    def run_sync(self, entity: EntityToImpute, schema, top_k: int = 1)-> ImputeOp :
+    
+       
         """
         Blocking variant — convenient for quick tests or notebooks.
         """
+
+        results: Dict[str, Any] = {}
+
+
         t0 = time.time()
         links = self.run_serpop(query, top_k)
         total = len(links)
-
 
         print(" ") 
 
@@ -258,7 +235,7 @@ class Imputeman:
         print(" ") 
         print(f"{total} links found; scraping started…")
         
-        results: Dict[str, Any] = {}
+        
         for i, url in enumerate(links, start=1):
             print(f"[{i}/{total}] scraping {url}")
             sr = scrape_url(
@@ -290,33 +267,6 @@ class Imputeman:
             print("Extracted:")
 
 
-#  success: bool                   # Whether filtering succeeded
-#     content: Any                    # The filtered corpus (text) for parsing
-#     usage: Optional[Dict[str, Any]] # LLM usage stats (tokens, cost, etc.)
-#     elapsed_time: float             # Time in seconds that the filter step took
-#     config: ExtractConfig           # The ExtractConfig used for this filter run
-#     reduced_html: Optional[str]     # Reduced HTML (if HTMLReducer was applied)
-#     html_reduce_op:     Optional[Any] = None   # holds the full Domreducer ReduceOperation object
-
-
-# class ReduceOperation:
-#     # ── required (no defaults) ──────────────────────────────────
-#     success: bool
-#     js_method_needed: bool
-#     total_char: int
-#     total_token: int
-#     raw_data: str
-
-#     # ── optional (have defaults) ────────────────────────────────
-#     reduced_data: Optional[str] = None
-#     reduced_total_char: Optional[int] = None
-#     reduced_total_token: Optional[int] = None
-#     token_reducement_percentage: Optional[float] = None
-#     error: Optional[str] = None
-#     reducement_details: Dict[str, Dict[str, int]] = field(default_factory=dict)
-
-
-            # op.filter_op.html_reduce_op.total_token
 
             print(f"html_token_reduction: {op.filter_op.html_reduce_op.total_token}->>>{op.filter_op.html_reduce_op.reduced_total_token}")
             print(f"filtering elapsed_time: {op.filter_op.elapsed_time}")
@@ -342,6 +292,58 @@ class Imputeman:
             elapsed=elapsed,
             results=results,
         )
+    
+    
+    def summary(self) -> str:
+        lines: List[str] = []
+        # ─── 1) serpengine ─────────────────────────────────────────────
+        se = self.search_op
+        lines.append(f"🔍 Search:")
+        lines.append(f"  • Query       : {self.query!r}")
+        lines.append(f"  • Hits found  : {self.hits}")
+        lines.append(f"  • Cost        : ${se.usage.cost:.6f}")
+        lines.append(f"  • Elapsed     : {se.elapsed_time:.2f}s")
+        lines.append("")
+
+        # ─── 2) Links ─────────────────────────────────────────────────
+        lines.append("🖇  Links:")
+        for u in self.links:
+            lines.append(f"  - {u}")
+        lines.append("")
+
+        # ─── 3) BrightData scrapes ────────────────────────────────────
+        lines.append("🌐 Scrape results:")
+        for u in self.links:
+            sr = self.scrape_results_dict[u]
+            size = sr.html_char_size or sr.row_count or 0
+            rows = f"rows={sr.row_count}" if sr.row_count is not None else ""
+            fields = f"fields={sr.field_count}" if sr.field_count is not None else ""
+            # compute elapsed: if timestamps are present
+            if sr.request_sent_at and sr.data_received_at:
+                elapsed = (sr.data_received_at - sr.request_sent_at).total_seconds()
+                elt = f"{elapsed:.2f}s"
+            else:
+                elt = "n/a"
+            cost = f"${sr.cost:.6f}" if sr.cost is not None else "n/a"
+            lines.append(
+                f"  - {u}\n"
+                f"      size={size}   {rows} {fields}\n"
+                f"      cost={cost}   elapsed={elt}"
+            )
+        lines.append("")
+
+        # ─── 4) Extraction ────────────────────────────────────────────
+        filter_tot = sum(op.filter_op.elapsed_time for op in self.extract_ops.values())
+        parse_tot  = sum(op.parse_op.elapsed_time  for op in self.extract_ops.values())
+        total_ext  = filter_tot + parse_tot
+        lines.append("✂️  Extraction summary:")
+        lines.append(f"  • Pages extracted : {self.extracted}/{self.hits}")
+        lines.append(
+            f"  • Total elapsed   : {total_ext:.2f}s "
+            f"({filter_tot:.2f}s filter + {parse_tot:.2f}s parse)"
+        )
+
+        return "\n".join(lines)
 
 
 # ─────────────────────────── CLI SMOKE-TEST ────────────────────────────
@@ -394,8 +396,7 @@ if __name__ == "__main__":
     iman = Imputeman()
     
     impute_op = iman.run_sync("bav99", schema=schema, top_k=1)
-    # print(impute_op.results)
-    
+    print(impute_op.results)
     
     
     print(impute_op)
