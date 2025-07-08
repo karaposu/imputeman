@@ -6,7 +6,6 @@ Tests the service layer directly to verify basic functionality works
 python -m imputeman.smoke_tests.test_1_run_imputeman_without_prefect
 """
 
-
 import asyncio
 import sys
 import os
@@ -60,11 +59,11 @@ async def test_services_directly():
             scrape_results = await registry.scraper.scrape_urls(test_urls)
             
             successful_scrapes = sum(1 for r in scrape_results.values() if r.status == "ready")
-            total_cost = sum(r.cost for r in scrape_results.values())
+            total_scrape_cost = sum(r.cost or 0.0 for r in scrape_results.values())
             
             print(f"   ✅ Scraping completed")
             print(f"   📊 {successful_scrapes}/{len(test_urls)} successful scrapes")
-            print(f"   💰 Total cost: ${total_cost:.3f}")
+            print(f"   💰 Total scrape cost: ${total_scrape_cost:.3f}")
             
             # Show sample scraped content
             for url, result in list(scrape_results.items())[:1]:
@@ -72,19 +71,38 @@ async def test_services_directly():
                     content_preview = result.data[:200] + "..." if len(result.data) > 200 else result.data
                     print(f"   📄 Sample content: {content_preview}")
                 else:
-                    print(f"   ❌ Scrape failed for {url}: {result.error_message}")
+                    error_msg = getattr(result, 'error_message', getattr(result, 'error', 'Unknown error'))
+                    print(f"   ❌ Scrape failed for {url}: {error_msg}")
         else:
             print("   ⚠️  No URLs to scrape")
             return False
         
-        # Test 3: Extractor Service
+        # Test 3: Extractor Service (Updated for ExtractHero)
         print("\n3️⃣ Testing Extractor Service...")
         if scrape_results:
             extract_results = await registry.extractor.extract_from_scrapes(scrape_results, schema)
             
             successful_extractions = sum(1 for r in extract_results.values() if r.success)
-            total_tokens = sum(r.tokens_used for r in extract_results.values())
-            total_extract_cost = sum(r.cost for r in extract_results.values())
+            
+            # Calculate metrics from ExtractHero's ExtractOp structure
+            total_tokens = 0
+            total_extract_cost = 0.0
+            
+            for result in extract_results.values():
+                # ExtractHero stores usage in result.usage (combined from filter + parse phases)
+                if result.usage:
+                    print(f"   🔍 Usage structure: {result.usage}")  # Debug: show actual structure
+                    
+                    # Sum all numeric values that might represent tokens
+                    for key, value in result.usage.items():
+                        if isinstance(value, (int, float)) and 'token' in key.lower():
+                            total_tokens += value
+                    
+                    # Look for cost fields
+                    if 'total_cost' in result.usage:
+                        total_extract_cost += result.usage['total_cost']
+                    elif 'cost' in result.usage:
+                        total_extract_cost += result.usage['cost']
             
             print(f"   ✅ Extraction completed")
             print(f"   📊 {successful_extractions}/{len(extract_results)} successful extractions")
@@ -97,7 +115,12 @@ async def test_services_directly():
                     print(f"   📋 Extracted from {url}:")
                     for field_name, value in result.content.items():
                         print(f"      {field_name}: {value}")
-                    print(f"      confidence: {result.confidence_score:.2f}")
+                    
+                    # ExtractHero doesn't have a single confidence_score, but we can show success
+                    filter_success = result.filter_op.success if result.filter_op else False
+                    parse_success = result.parse_op.success if result.parse_op else False
+                    print(f"      filter_success: {filter_success}, parse_success: {parse_success}")
+                    print(f"      elapsed_time: {result.elapsed_time:.2f}s")
                     break
         else:
             print("   ⚠️  No scrape results to extract from")
@@ -147,12 +170,23 @@ async def test_simple_integration():
         if scrape_results:
             extract_results = await registry.extractor.extract_from_scrapes(scrape_results, schema)
         
-        # Results
-        total_cost = sum(r.cost for r in scrape_results.values()) + sum(r.cost for r in extract_results.values())
+        # Calculate total costs (Updated for ExtractHero)
+        scrape_cost = sum(r.cost or 0.0 for r in scrape_results.values())
+        
+        extract_cost = 0.0
+        for result in extract_results.values():
+            if result.usage:
+                print(f"   🔍 Extract usage: {result.usage}")  # Debug: show actual structure
+                if 'total_cost' in result.usage:
+                    extract_cost += result.usage['total_cost']
+                elif 'cost' in result.usage:
+                    extract_cost += result.usage['cost']
+        
+        total_cost = scrape_cost + extract_cost
         successful_extractions = sum(1 for r in extract_results.values() if r.success)
         
         print(f"✅ Pipeline completed!")
-        print(f"💰 Total cost: ${total_cost:.3f}")
+        print(f"💰 Total cost: ${total_cost:.3f} (scrape: ${scrape_cost:.3f}, extract: ${extract_cost:.3f})")
         print(f"📊 Successful extractions: {successful_extractions}")
         
         # Show final data
@@ -161,11 +195,16 @@ async def test_simple_integration():
             for url, result in extract_results.items():
                 if result.success:
                     print(f"  From {url}: {result.content}")
+                    print(f"    - Filter phase: {result.filter_op.success if result.filter_op else 'N/A'}")
+                    print(f"    - Parse phase: {result.parse_op.success if result.parse_op else 'N/A'}")
+                    print(f"    - Total time: {result.elapsed_time:.2f}s")
         
         return True
         
     except Exception as e:
         print(f"❌ Integration test failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
         
     finally:

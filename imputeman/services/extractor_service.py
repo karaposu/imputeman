@@ -1,21 +1,16 @@
 # imputeman/services/extractor_service.py
-"""AI-powered data extraction service for structured data extraction from HTML"""
+"""Simplified extractor service that directly uses ExtractHero"""
 
 import asyncio
-import time
-import json
-from typing import Dict, Any, List, Optional, Union
-import httpx
-
+from typing import Dict, List, Union, Any
 from ..core.config import ExtractConfig
-from ..core.entities import WhatToRetain, ScrapeResult
+from ..core.entities import WhatToRetain
 from brightdata.models import ScrapeResult
-from extracthero import ExtractOp
 
-# Import ExtractHero for the actual extraction work
+# Import ExtractHero
 try:
     from extracthero import ExtractHero
-    from extracthero.schemes import WhatToRetain as ExtractHeroWhatToRetain, ExtractConfig as ExtractHeroConfig
+    from extracthero.schemes import WhatToRetain as ExtractHeroWhatToRetain, ExtractConfig as ExtractHeroConfig, ExtractOp
     EXTRACTHERO_AVAILABLE = True
 except ImportError:
     EXTRACTHERO_AVAILABLE = False
@@ -23,27 +18,20 @@ except ImportError:
 
 class ExtractorService:
     """
-    Service for AI-powered data extraction from HTML content
-    
-    This service abstracts away the details of different extraction methods
-    and provides a consistent interface for structured data extraction.
+    Simple service that wraps ExtractHero for the Imputeman pipeline
     """
     
     def __init__(self, config: ExtractConfig):
         self.config = config
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(self.config.timeout_seconds)
-        )
         
-        # Initialize ExtractHero if available
+        # Initialize ExtractHero
         if EXTRACTHERO_AVAILABLE:
-            # Create ExtractHero config
             extracthero_config = ExtractHeroConfig()
             self.extract_hero = ExtractHero(config=extracthero_config)
         else:
             self.extract_hero = None
-    
-    # ==================== New Methods for Test Compatibility ====================
+        
+
     
     async def extract_from_html(
         self, 
@@ -60,68 +48,25 @@ class ExtractorService:
             reduce_html: Whether to reduce HTML size before extraction
             
         Returns:
-            ExtractOp with extracted data (includes usage and elapsed_time)
+            ExtractOp with extracted data
         """
-        try:
-            if not self.extract_hero:
-                raise Exception("ExtractHero not available")
-            
-            # Convert WhatToRetain to ExtractHero format
-            extracthero_schema = self._convert_schema_to_extracthero(extraction_schema)
-            
-            # Use ExtractHero for extraction
-            extract_op = await self.extract_hero.extract_async(
-                text=html_content,
-                extraction_spec=extracthero_schema,
-                text_type="html",
-                reduce_html=reduce_html
-            )
-            
-            # ExtractOp already contains all metrics we need:
-            # - extract_op.success
-            # - extract_op.elapsed_time
-            # - extract_op.usage
-            # - extract_op.content
-            
-            return extract_op
-            
-        except Exception as e:
-            # Return a failed ExtractOp
-            from extracthero.schemes import FilterOp, ParseOp
-            
-            start_time = time.time()
-            
-            # Create failed filter and parse ops
-            failed_filter_op = FilterOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                reduced_html=None,
-                error=f"HTML extraction failed: {str(e)}"
-            )
-            
-            failed_parse_op = ParseOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                error="Parse phase not reached"
-            )
-            
-            # Create ExtractOp using from_operations
-            return ExtractOp.from_operations(
-                filter_op=failed_filter_op,
-                parse_op=failed_parse_op,
-                start_time=start_time,
-                content=None
-            )
+        if not self.extract_hero:
+            raise Exception("ExtractHero not available")
+        
+        # Convert WhatToRetain to ExtractHero format
+        extracthero_schema = self._convert_schema(extraction_schema)
+        
+        # Use ExtractHero for extraction
+        return await self.extract_hero.extract_async(
+            text=html_content,
+            extraction_spec=extracthero_schema,
+            text_type="html",
+            reduce_html=reduce_html
+        )
     
     async def extract_from_json(
         self, 
-        json_data: Union[Dict[str, Any], str], 
+        json_data, 
         extraction_schema: List[WhatToRetain]
     ) -> ExtractOp:
         """
@@ -132,216 +77,47 @@ class ExtractorService:
             extraction_schema: List of WhatToRetain objects defining extraction schema
             
         Returns:
-            ExtractOp with extracted data (includes usage and elapsed_time)
+            ExtractOp with extracted data
         """
-        try:
-            if not self.extract_hero:
-                raise Exception("ExtractHero not available")
-            
-            # Convert WhatToRetain to ExtractHero format
-            extracthero_schema = self._convert_schema_to_extracthero(extraction_schema)
-            
-            # Determine input type
-            if isinstance(json_data, str):
-                text_type = "json"
-                input_data = json_data
-            else:
-                text_type = "dict"
-                input_data = json_data
-            
-            # Use ExtractHero for extraction
-            extract_op = await self.extract_hero.extract_async(
-                text=input_data,
-                extraction_spec=extracthero_schema,
-                text_type=text_type
-            )
-            
-            return extract_op
-            
-        except Exception as e:
-            # Return a failed ExtractOp
-            from extracthero.schemes import FilterOp, ParseOp
-            
-            start_time = time.time()
-            
-            # Create failed filter and parse ops
-            failed_filter_op = FilterOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                reduced_html=None,
-                error=f"JSON extraction failed: {str(e)}"
-            )
-            
-            failed_parse_op = ParseOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                error="Parse phase not reached"
-            )
-            
-            return ExtractOp.from_operations(
-                filter_op=failed_filter_op,
-                parse_op=failed_parse_op,
-                start_time=start_time,
-                content=None
-            )
-    
-    async def extract_batch(
-        self, 
-        html_contents: Dict[str, str], 
-        extraction_schema: List[WhatToRetain]
-    ) -> Dict[str, ExtractOp]:
-        """
-        Extract structured data from multiple HTML contents
+        if not self.extract_hero:
+            raise Exception("ExtractHero not available")
         
-        Args:
-            html_contents: Dictionary of identifier -> HTML content
-            extraction_schema: List of WhatToRetain objects defining extraction schema
-            
-        Returns:
-            Dictionary of identifier -> ExtractOp
-        """
-        extract_tasks = []
+        # Convert WhatToRetain to ExtractHero format
+        extracthero_schema = self._convert_schema(extraction_schema)
         
-        for identifier, html_content in html_contents.items():
-            task = self._extract_single_html(identifier, html_content, extraction_schema)
-            extract_tasks.append(task)
+        # Determine input type
+        if isinstance(json_data, str):
+            text_type = "json"
+            input_data = json_data
+        else:
+            text_type = "dict"
+            input_data = json_data
         
-        results = await asyncio.gather(*extract_tasks, return_exceptions=True)
-        
-        # Process results
-        batch_results = {}
-        for identifier, result in zip(html_contents.keys(), results):
-            if isinstance(result, Exception):
-                # Create failed ExtractOp
-                from extracthero.schemes import FilterOp, ParseOp
-                
-                start_time = time.time()
-                
-                failed_filter_op = FilterOp(
-                    success=False,
-                    content=None,
-                    usage=None,
-                    elapsed_time=0.0,
-                    config=self.extract_hero.config if self.extract_hero else None,
-                    reduced_html=None,
-                    error=str(result)
-                )
-                
-                failed_parse_op = ParseOp(
-                    success=False,
-                    content=None,
-                    usage=None,
-                    elapsed_time=0.0,
-                    config=self.extract_hero.config if self.extract_hero else None,
-                    error="Parse phase not reached"
-                )
-                
-                batch_results[identifier] = ExtractOp.from_operations(
-                    filter_op=failed_filter_op,
-                    parse_op=failed_parse_op,
-                    start_time=start_time,
-                    content=None
-                )
-            else:
-                batch_results[identifier] = result
-        
-        return batch_results
-    
-    async def _extract_single_html(
-        self, 
-        identifier: str, 
-        html_content: str, 
-        extraction_schema: List[WhatToRetain]
-    ) -> ExtractOp:
-        """Helper method for batch extraction"""
-        try:
-            if not self.extract_hero:
-                raise Exception("ExtractHero not available")
-            
-            # Convert schema
-            extracthero_schema = self._convert_schema_to_extracthero(extraction_schema)
-            
-            # Extract using ExtractHero
-            extract_op = await self.extract_hero.extract_async(
-                text=html_content,
-                extraction_spec=extracthero_schema,
-                text_type="html"
-            )
-            
-            return extract_op
-            
-        except Exception as e:
-            # Return failed ExtractOp
-            from extracthero.schemes import FilterOp, ParseOp
-            
-            start_time = time.time()
-            
-            failed_filter_op = FilterOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                reduced_html=None,
-                error=f"Batch extraction failed: {str(e)}"
-            )
-            
-            failed_parse_op = ParseOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                error="Parse phase not reached"
-            )
-            
-            return ExtractOp.from_operations(
-                filter_op=failed_filter_op,
-                parse_op=failed_parse_op,
-                start_time=start_time,
-                content=None
-            )
-    
-    def set_confidence_threshold(self, threshold: float):
-        """Set confidence threshold for extractions"""
-        self.config.confidence_threshold = threshold
-    
-    def get_usage_stats(self) -> Dict[str, Any]:
-        """
-        Get usage statistics from ExtractOp results
-        
-        Note: This now returns a simple message since we don't track
-        cumulative stats. Individual ExtractOp objects contain their
-        own usage and timing information.
-        """
-        return {
-            "message": "Usage statistics are available in individual ExtractOp results",
-            "info": "Each ExtractOp contains 'usage' and 'elapsed_time' fields"
-        }
-    
-    # ==================== Original Methods (for ScrapeResult compatibility) ====================
-    
+        # Use ExtractHero for extraction
+        return await self.extract_hero.extract_async(
+            text=input_data,
+            extraction_spec=extracthero_schema,
+            text_type=text_type
+        )
+
     async def extract_from_scrapes(
         self, 
         scrape_results: Dict[str, ScrapeResult], 
         schema: List[WhatToRetain]
     ) -> Dict[str, ExtractOp]:
         """
-        Extract structured data from multiple scrape results
+        Extract data from scrape results using ExtractHero
         
         Args:
             scrape_results: Dictionary of URL -> ScrapeResult
-            schema: List of WhatToRetain objects defining extraction schema
+            schema: List of WhatToRetain extraction schema
             
         Returns:
-            Dictionary of URL -> ExtractOp
+            Dictionary of URL -> ExtractOp (from extracthero)
         """
+        if not self.extract_hero:
+            raise Exception("ExtractHero not available")
+        
         # Filter successful scrapes
         valid_scrapes = {
             url: result for url, result in scrape_results.items()
@@ -351,135 +127,88 @@ class ExtractorService:
         if not valid_scrapes:
             return {}
         
+        # Convert schema to extracthero format
+        extracthero_schema = self._convert_schema(schema)
+        
         # Extract from each valid scrape
         extract_tasks = [
-            self.extract_single(url, scrape_result, schema)
+            self._extract_single(url, scrape_result.data, extracthero_schema)
             for url, scrape_result in valid_scrapes.items()
         ]
         
         results = await asyncio.gather(*extract_tasks, return_exceptions=True)
         
-        # Process results
+        # Build results dictionary
         extract_results = {}
         for (url, _), result in zip(valid_scrapes.items(), results):
             if isinstance(result, Exception):
-                # Create failed ExtractOp
-                from extracthero.schemes import FilterOp, ParseOp
-                
-                start_time = time.time()
-                
-                failed_filter_op = FilterOp(
-                    success=False,
-                    content=None,
-                    usage=None,
-                    elapsed_time=0.0,
-                    config=self.extract_hero.config if self.extract_hero else None,
-                    reduced_html=None,
-                    error=str(result)
-                )
-                
-                failed_parse_op = ParseOp(
-                    success=False,
-                    content=None,
-                    usage=None,
-                    elapsed_time=0.0,
-                    config=self.extract_hero.config if self.extract_hero else None,
-                    error="Parse phase not reached"
-                )
-                
-                extract_results[url] = ExtractOp.from_operations(
-                    filter_op=failed_filter_op,
-                    parse_op=failed_parse_op,
-                    start_time=start_time,
-                    content=None
-                )
+                # Create a failed ExtractOp
+                extract_results[url] = self._create_failed_extract_op(str(result))
             else:
                 extract_results[url] = result
         
         return extract_results
     
-    async def extract_single(
-        self, 
-        url: str, 
-        scrape_result: ScrapeResult, 
-        schema: List[WhatToRetain]
-    ) -> ExtractOp:
-        """
-        Extract structured data from a single scraped page
-        
-        Args:
-            url: URL of the page
-            scrape_result: Scraping result containing HTML
-            schema: Extraction schema
-            
-        Returns:
-            ExtractOp with extracted data (includes usage and elapsed_time)
-        """
-        try:
-            if not self.extract_hero:
-                raise Exception("ExtractHero not available")
-            
-            # Use ExtractHero for extraction
-            extracthero_schema = self._convert_schema_to_extracthero(schema)
-            
-            extract_op = await self.extract_hero.extract_async(
-                text=scrape_result.data,
-                extraction_spec=extracthero_schema,
-                text_type="html"
-            )
-            
-            return extract_op
-            
-        except Exception as e:
-            # Return failed ExtractOp
-            from extracthero.schemes import FilterOp, ParseOp
-            
-            start_time = time.time()
-            
-            failed_filter_op = FilterOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                reduced_html=None,
-                error=f"Extraction failed: {str(e)}"
-            )
-            
-            failed_parse_op = ParseOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                error="Parse phase not reached"
-            )
-            
-            return ExtractOp.from_operations(
-                filter_op=failed_filter_op,
-                parse_op=failed_parse_op,
-                start_time=start_time,
-                content=None
-            )
+    async def _extract_single(self, url: str, html_data: str, schema: List[ExtractHeroWhatToRetain]) -> ExtractOp:
+        """Extract from a single HTML document"""
+        return await self.extract_hero.extract_async(
+            text=html_data,
+            extraction_spec=schema,
+            text_type="html"
+        )
     
-    # ==================== Helper Methods ====================
-    
-    def _convert_schema_to_extracthero(self, schema: List[WhatToRetain]) -> List[ExtractHeroWhatToRetain]:
-        """Convert WhatToRetain schema to ExtractHero format"""
-        if not EXTRACTHERO_AVAILABLE:
-            raise Exception("ExtractHero not available")
-        
-        extracthero_schema = []
-        for item in schema:
-            extracthero_item = ExtractHeroWhatToRetain(
+    def _convert_schema(self, schema: List[WhatToRetain]) -> List[ExtractHeroWhatToRetain]:
+        """Convert WhatToRetain to ExtractHero format"""
+        return [
+            ExtractHeroWhatToRetain(
                 name=item.name,
                 desc=item.desc,
                 example=item.example
             )
-            extracthero_schema.append(extracthero_item)
+            for item in schema
+        ]
+    
+    def _create_failed_extract_op(self, error_msg: str) -> ExtractOp:
+        """Create a failed ExtractOp for error cases"""
+        from extracthero.schemes import FilterOp, ParseOp
+        import time
         
-        return extracthero_schema
+        start_time = time.time()
+        
+        failed_filter_op = FilterOp(
+            success=False,
+            content=None,
+            usage=None,
+            elapsed_time=0.0,
+            config=self.extract_hero.config,
+            reduced_html=None,
+            error=error_msg
+        )
+        
+        failed_parse_op = ParseOp(
+            success=False,
+            content=None,
+            usage=None,
+            elapsed_time=0.0,
+            config=self.extract_hero.config,
+            error="Parse phase not reached"
+        )
+        
+        return ExtractOp.from_operations(
+            filter_op=failed_filter_op,
+            parse_op=failed_parse_op,
+            start_time=start_time,
+            content=None
+        )
+    
+    def get_usage_stats(self) -> Dict[str, Any]:
+        """Get basic service info (no tracking)"""
+        return {
+            "service_type": "ExtractorService",
+            "extracthero_available": self.extract_hero is not None,
+            "config": str(self.config)
+        }
     
     async def close(self):
         """Clean up resources"""
-        await self.client.aclose()
+        pass

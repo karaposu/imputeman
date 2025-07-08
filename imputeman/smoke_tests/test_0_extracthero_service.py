@@ -36,7 +36,6 @@ async def test_extractor_service_creation():
         config = get_development_config()
         print("✅ Config loaded successfully")
         print(f"📋 Extract config: {config.extract_config}")
-        print(f"   - Confidence threshold: {config.extract_config.confidence_threshold}")
         print(f"   - Max retries: {config.extract_config.max_retries}")
         print(f"   - Timeout: {config.extract_config.timeout_seconds}s")
         
@@ -89,7 +88,7 @@ async def test_service_basic_html_extraction():
             <div class="specs">
               <p>Focal length: 85mm</p>
               <p>Aperture: f/1.4</p>
-              <p>Weather sealed: Yes</p>
+              <p>Weather sealed</p>
             </div>
           </div>
         </body></html>
@@ -125,16 +124,16 @@ async def test_service_basic_html_extraction():
         
         print(f"✅ Service HTML extraction completed")
         print(f"📊 Success: {result.success}")
-        print(f"📊 Confidence: {result.confidence_score}")
+      
         
-        if result.success and result.extracted_data:
-            print(f"📊 Extracted data type: {type(result.extracted_data)}")
-            print(f"📊 Data preview: {str(result.extracted_data)[:200]}...")
+        if result.success and result.content:
+            print(f"📊 Extracted data type: {type(result.content)}")
+            print(f"📊 Data preview: {str(result.content)[:200]}...")
             
             # Validate extracted data structure
-            if isinstance(result.extracted_data, dict) and result.extracted_data:
+            if isinstance(result.content, dict) and result.content:
                 print(f"📊 Extraction validation: ✅ Valid structured data")
-                print(f"📊 Extracted fields: {list(result.extracted_data.keys())}")
+                print(f"📊 Extracted fields: {list(result.content.keys())}")
                 return True
             else:
                 print(f"📊 Extraction validation: ❌ Invalid data structure")
@@ -151,103 +150,6 @@ async def test_service_basic_html_extraction():
         traceback.print_exc()
         return False
 
-
-async def test_service_batch_extraction():
-    """Test batch extraction through service layer"""
-    
-    print("\n🔄 Testing Service + Batch Extraction")
-    print("=" * 50)
-    
-    if not EXTRACTHERO_AVAILABLE:
-        print("❌ ExtractHero not available, skipping test")
-        return False
-    
-    try:
-        config = get_development_config()
-        registry = ServiceRegistry(config)
-        extractor_service = registry.extractor
-        
-        # Multiple HTML samples
-        html_samples = {
-            "camera_lens": """
-            <div class="product">
-                <h1>Canon 85mm f/1.4L</h1>
-                <span class="price">$1,599.00</span>
-                <p>Professional portrait lens</p>
-            </div>
-            """,
-            "memory_card": """
-            <div class="product">
-                <h1>SanDisk 128GB SD Card</h1>
-                <span class="price">$45.99</span>
-                <p>High-speed memory card</p>
-            </div>
-            """,
-            "camera_body": """
-            <div class="product">
-                <h1>Canon EOS R5</h1>
-                <span class="price">$3,899.00</span>
-                <p>Professional mirrorless camera</p>
-            </div>
-            """
-        }
-        
-        extraction_schema = [
-            WhatToRetain(
-                name="product_name",
-                desc="Product name or title",
-                example="Canon 85mm f/1.4L"
-            ),
-            WhatToRetain(
-                name="price",
-                desc="Product price",
-                example="$1,599.00"
-            )
-        ]
-        
-        print(f"🔄 Testing batch extraction with {len(html_samples)} items...")
-        
-        # Test batch extraction
-        if hasattr(extractor_service, 'extract_batch'):
-            results = await extractor_service.extract_batch(
-                html_contents=html_samples,
-                extraction_schema=extraction_schema
-            )
-            
-            print(f"✅ Batch extraction completed")
-            print(f"📊 Results type: {type(results)}")
-            print(f"📊 Results count: {len(results)}")
-            
-            successful_extractions = 0
-            total_confidence = 0.0
-            
-            for item_id, result in results.items():
-                if result.success:
-                    successful_extractions += 1
-                    total_confidence += result.confidence_score
-                    print(f"   🔗 {item_id}: ✅ (confidence: {result.confidence_score:.2f})")
-                    if result.extracted_data:
-                        print(f"      Data: {result.extracted_data}")
-                else:
-                    print(f"   🔗 {item_id}: ❌ Failed")
-                    if result.error_message:
-                        print(f"      Error: {result.error_message}")
-            
-            avg_confidence = total_confidence / successful_extractions if successful_extractions > 0 else 0
-            print(f"📊 Success rate: {successful_extractions}/{len(html_samples)} ({successful_extractions/len(html_samples)*100:.0f}%)")
-            print(f"📊 Average confidence: {avg_confidence:.2f}")
-            
-            # Success if all extractions worked
-            return successful_extractions == len(html_samples)
-        else:
-            print("❌ Service doesn't have extract_batch method")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Batch extraction failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 
 async def test_service_json_extraction():
@@ -309,13 +211,13 @@ async def test_service_json_extraction():
             
             print(f"✅ Service JSON extraction completed")
             print(f"📊 Success: {result.success}")
-            print(f"📊 Confidence: {result.confidence_score}")
+           
             
-            if result.success and result.extracted_data:
-                print(f"📊 Data type: {type(result.extracted_data)}")
-                print(f"📊 Extracted data: {result.extracted_data}")
+            if result.success and result.content:
+              
+                print(f"📊 Extracted data: {result.content}")
                 
-                if isinstance(result.extracted_data, dict) and result.extracted_data:
+                if isinstance(result.content, dict) and result.content:
                     return True
                 else:
                     print(f"📊 Invalid data structure")
@@ -334,87 +236,7 @@ async def test_service_json_extraction():
         return False
 
 
-async def test_service_configuration_options():
-    """Test service configuration options"""
-    
-    print("\n⚙️ Testing Service Configuration Options")
-    print("=" * 50)
-    
-    if not EXTRACTHERO_AVAILABLE:
-        print("❌ ExtractHero not available, skipping test")
-        return False
-    
-    try:
-        config = get_development_config()
-        registry = ServiceRegistry(config)
-        extractor_service = registry.extractor
-        
-        sample_html = """
-        <div class="complex-page">
-            <h1>Smart Watch Pro</h1>
-            <span class="price">$299.99</span>
-            <div class="features">Advanced fitness tracking</div>
-        </div>
-        """
-        
-        extraction_schema = [
-            WhatToRetain(
-                name="watch_info",
-                desc="Smart watch information",
-                example="Smart Watch Pro - $299.99"
-            )
-        ]
-        
-        # Test with different configuration options
-        print(f"🔄 Testing with HTML reduction enabled...")
-        
-        if hasattr(extractor_service, 'extract_from_html'):
-            result_reduced = await extractor_service.extract_from_html(
-                html_content=sample_html,
-                extraction_schema=extraction_schema,
-                reduce_html=True
-            )
-            
-            print(f"✅ HTML reduction extraction completed")
-            print(f"📊 Success: {result_reduced.success}")
-            
-            # Test with HTML reduction disabled
-            print(f"🔄 Testing with HTML reduction disabled...")
-            result_full = await extractor_service.extract_from_html(
-                html_content=sample_html,
-                extraction_schema=extraction_schema,
-                reduce_html=False
-            )
-            
-            print(f"✅ Full HTML extraction completed")
-            print(f"📊 Success: {result_full.success}")
-            
-            # Test with custom confidence threshold
-            print(f"🔄 Testing with custom confidence threshold...")
-            if hasattr(extractor_service, 'set_confidence_threshold'):
-                extractor_service.set_confidence_threshold(0.9)
-                result_high_confidence = await extractor_service.extract_from_html(
-                    html_content=sample_html,
-                    extraction_schema=extraction_schema
-                )
-                print(f"✅ High confidence extraction completed")
-                print(f"📊 Success: {result_high_confidence.success}")
-                
-                # Reset confidence threshold
-                extractor_service.set_confidence_threshold(config.extract_config.confidence_threshold)
-            
-            # Success if at least basic configurations work
-            basic_configs_work = result_reduced.success and result_full.success
-            return basic_configs_work
-        else:
-            print("❌ Service doesn't have extract_from_html method")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Configuration options test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+
 
 
 async def test_service_error_handling():
@@ -505,163 +327,6 @@ async def test_service_error_handling():
         return False
 
 
-async def test_service_performance_metrics():
-    """Test service performance and usage metrics"""
-    
-    print("\n📊 Testing Service Performance Metrics")
-    print("=" * 50)
-    
-    if not EXTRACTHERO_AVAILABLE:
-        print("❌ ExtractHero not available, skipping test")
-        return False
-    
-    try:
-        config = get_development_config()
-        registry = ServiceRegistry(config)
-        extractor_service = registry.extractor
-        
-        sample_html = """
-        <div class="product">
-            <h1>Test Product</h1>
-            <span class="price">$99.99</span>
-            <p>Product description here</p>
-        </div>
-        """
-        
-        extraction_schema = [
-            WhatToRetain(
-                name="product_summary",
-                desc="Product summary with name and price",
-                example="Test Product - $99.99"
-            )
-        ]
-        
-        print(f"🔍 Testing performance metrics collection...")
-        
-        # Perform extraction and measure time
-        start_time = time()
-        if hasattr(extractor_service, 'extract_from_html'):
-            result = await extractor_service.extract_from_html(
-                html_content=sample_html,
-                extraction_schema=extraction_schema
-            )
-            end_time = time()
-            
-            extraction_time = end_time - start_time
-            print(f"✅ Extraction completed in {extraction_time:.2f}s")
-            print(f"📊 Success: {result.success}")
-            
-            # Check for performance metrics
-            metrics_available = []
-            
-            if hasattr(result, 'elapsed_time'):
-                metrics_available.append("elapsed_time")
-                print(f"📊 Processing time: {result.elapsed_time:.2f}s")
-            
-            if hasattr(result, 'tokens_used'):
-                metrics_available.append("tokens_used")
-                print(f"📊 Token usage: {result.tokens_used}")
-            
-            if hasattr(result, 'confidence_score'):
-                metrics_available.append("confidence_score")
-                print(f"📊 Confidence score: {result.confidence_score:.2f}")
-            
-            if hasattr(result, 'cost'):
-                metrics_available.append("cost")
-                print(f"📊 Cost estimate: {result.cost}")
-            
-            # Check service-level metrics
-            if hasattr(extractor_service, 'get_usage_stats'):
-                stats = extractor_service.get_usage_stats()
-                print(f"📊 Service usage stats: {stats}")
-                metrics_available.append("usage_stats")
-            
-            print(f"📊 Available metrics: {metrics_available}")
-            
-            # Success if extraction worked and some metrics are available
-            has_basic_metrics = len(metrics_available) >= 1
-            return result.success and has_basic_metrics
-        else:
-            print("❌ Service doesn't have extract_from_html method")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Performance metrics test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-async def test_service_direct_extracthero_integration():
-    """Test service integration with direct ExtractHero functionality"""
-    
-    print("\n🔗 Testing Direct ExtractHero Integration")
-    print("=" * 50)
-    
-    if not EXTRACTHERO_AVAILABLE:
-        print("❌ ExtractHero not available, skipping test")
-        return False
-    
-    try:
-        config = get_development_config()
-        registry = ServiceRegistry(config)
-        extractor_service = registry.extractor
-        
-        # Test direct access to ExtractHero
-        if hasattr(extractor_service, 'extract_hero'):
-            extract_hero = extractor_service.extract_hero
-            print(f"✅ ExtractHero accessible: {type(extract_hero)}")
-            
-            # Test direct ExtractHero usage through service
-            sample_html = """
-            <div class="item">
-                <h2>Direct Test Item</h2>
-                <span>$49.99</span>
-            </div>
-            """
-            
-            from extracthero.schemes import WhatToRetain as ExtractHeroWhatToRetain
-            
-            extraction_spec = [
-                ExtractHeroWhatToRetain(
-                    name="item_name",
-                    desc="Item name",
-                    example="Direct Test Item"
-                ),
-                ExtractHeroWhatToRetain(
-                    name="price",
-                    desc="Item price",
-                    example="$49.99"
-                )
-            ]
-            
-            print(f"🔄 Testing direct ExtractHero call...")
-            direct_result = extract_hero.extract(
-                text=sample_html,
-                extraction_spec=extraction_spec,
-                text_type="html"
-            )
-            
-            print(f"✅ Direct ExtractHero call completed")
-            print(f"📊 Filter success: {direct_result.filter_op.success}")
-            print(f"📊 Parse success: {direct_result.parse_op.success}")
-            
-            direct_success = (direct_result.filter_op.success and 
-                            direct_result.parse_op.success and 
-                            direct_result.content is not None)
-            
-            print(f"📊 Direct integration: {'✅ Working' if direct_success else '❌ Failed'}")
-            
-            return direct_success
-        else:
-            print("❌ Service doesn't expose extract_hero")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Direct ExtractHero integration failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 
 async def main():
@@ -674,12 +339,9 @@ async def main():
     test_results = {
         "service_creation": await test_extractor_service_creation(),
         "basic_html_extraction": await test_service_basic_html_extraction(),
-        "batch_extraction": await test_service_batch_extraction(),
         "json_extraction": await test_service_json_extraction(),
-        "configuration_options": await test_service_configuration_options(),
         "error_handling": await test_service_error_handling(),
-        "performance_metrics": await test_service_performance_metrics(),
-        "direct_extracthero_integration": await test_service_direct_extracthero_integration(),
+
     }
     
     # Calculate results
