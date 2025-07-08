@@ -30,7 +30,58 @@ class ExtractorService:
             self.extract_hero = ExtractHero(config=extracthero_config)
         else:
             self.extract_hero = None
+
+    
+    async def extract_from_scrapes_streaming(
+        self, 
+        scrape_tasks: Dict[asyncio.Task, str],  # Task -> URL mapping
+        schema: List[WhatToRetain]
+    ) -> Dict[str, ExtractOp]:
+        """
+        Stream extraction: extract as soon as each scrape completes
         
+        Args:
+            scrape_tasks: Dict mapping asyncio.Task -> URL
+            schema: Extraction schema
+            
+        Returns:
+            Dict mapping URL -> ExtractOp (results arrive incrementally)
+        """
+        extract_results = {}
+        
+        # Process scrapes as they complete (streaming!)
+        for completed_scrape_task in asyncio.as_completed(scrape_tasks.keys()):
+            try:
+                url = scrape_tasks[completed_scrape_task]
+                scrape_result = await completed_scrape_task
+                
+                print(f"🔄 Scrape completed for {url[:40]}..., starting extraction immediately")
+                
+                # Immediately extract from this completed scrape
+                if self._is_scrape_successful(scrape_result):
+                    extract_result = await self.extract_from_single_scrape(scrape_result, schema)
+                    extract_results.update(extract_result)
+                    
+                    print(f"✅ Extraction completed for {url[:40]}...")
+                else:
+                    print(f"⚠️  Scrape failed for {url[:40]}..., skipping extraction")
+                    
+            except Exception as e:
+                url = scrape_tasks.get(completed_scrape_task, "unknown")
+                print(f"❌ Streaming extraction failed for {url}: {e}")
+        
+        return extract_results
+    
+    async def extract_from_single_scrape(self, scrape_result, schema):
+        """Extract from a single completed scrape result"""
+        return await self.extract_from_scrapes(scrape_result, schema)
+    
+    def _is_scrape_successful(self, scrape_result):
+        """Check if scrape result is valid for extraction"""
+        return any(r.status == "ready" and r.data for r in scrape_result.values())
+
+
+
 
     
     async def extract_from_html(

@@ -1,9 +1,9 @@
-# smoke_tests/test_0_serp_service.py
+# smoke_tests/test_1_serp_service.py
 """
-Smoke Test 0B: Test SERP service layer in isolation
+Smoke Test 1: Test SERP service layer in isolation
 Tests the SerpService wrapper to identify service-specific issues
 
-python -m imputeman.smoke_tests.test_0_serp_service
+python -m imputeman.smoke_tests.test_1_serp_service
 """
 
 import asyncio

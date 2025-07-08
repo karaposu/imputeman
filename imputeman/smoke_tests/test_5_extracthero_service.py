@@ -1,9 +1,9 @@
-# smoke_tests/test_0_extracthero_service.py
+# smoke_tests/test_5_extracthero_service.py
 """
-Smoke Test 0F: Test ExtractHero service layer integration
+Smoke Test 5: Test ExtractHero service layer integration
 Tests ExtractorService wrapper integration with ExtractHero functionality
 
-python -m imputeman.smoke_tests.test_0_extracthero_service
+python -m imputeman.smoke_tests.test_5_extracthero_service
 """
 
 import asyncio

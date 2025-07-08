@@ -1,9 +1,9 @@
-# smoke_tests/test_0_scrape_service.py
+# smoke_tests/test_3_scrape_service.py
 """
-Smoke Test 0D: Test Scraper service layer integration with real BrightData
+Smoke Test 3: Test Scraper service layer integration with real BrightData
 Tests ScraperService wrapper integration with actual brightdata.auto methods
 
-python -m imputeman.smoke_tests.test_0_scrape_service
+python -m imputeman.smoke_tests.test_3_scrape_service
 """
 
 import asyncio

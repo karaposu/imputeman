@@ -1,9 +1,9 @@
-# smoke_tests/test_0_extracthero_without_service.py
+# smoke_tests/test_4_extracthero_without_service.py
 """
-Smoke Test 0E: Test ExtractHero core functionality without service layer
+Smoke Test 4: Test ExtractHero core functionality without service layer
 Tests ExtractHero and FilterHero direct integration with LLM services
 
-python -m imputeman.smoke_tests.test_0_extracthero_without_service
+python -m imputeman.smoke_tests.test_4_extracthero_without_service
 """
 
 import asyncio

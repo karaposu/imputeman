@@ -1,9 +1,9 @@
-# smoke_tests/test_0_scrape_without_service.py
+# smoke_tests/test_2_scrape_without_service.py
 """
-Smoke Test 0C: Test raw BrightData functionality without service layer
+Smoke Test 2: Test raw BrightData functionality without service layer
 Tests actual brightdata.auto methods directly
 
-python -m imputeman.smoke_tests.test_0_scrape_without_service
+python -m imputeman.smoke_tests.test_2_scrape_without_service
 """
 
 import asyncio

@@ -20,6 +20,32 @@ class ScraperService:
     def __init__(self, config: ScrapeConfig):
         self.config = config
         self._executor = ThreadPoolExecutor(max_workers=config.concurrent_limit)
+
+
+    # NEW: Streaming scraping method
+    def create_scrape_tasks(self, urls: List[str]) -> Dict[asyncio.Task, str]:
+        """
+        Create individual scrape tasks for streaming processing
+        
+        Args:
+            urls: List of URLs to scrape
+            
+        Returns:
+            Dict mapping asyncio.Task -> URL for use with asyncio.as_completed()
+        """
+        scrape_tasks = {}
+        
+        for url in urls:
+            # Create individual scrape task for each URL
+            task = asyncio.create_task(self._scrape_single_url_as_dict(url))
+            scrape_tasks[task] = url
+            
+        return scrape_tasks
+    
+    async def _scrape_single_url_as_dict(self, url: str) -> Dict[str, ScrapeResult]:
+        """Scrape single URL and return as dict format expected by extractor"""
+        result = await self._brightdata_scrape(url)
+        return {url: result}
     
     async def scrape_urls(self, urls: List[str]) -> Dict[str, ScrapeResult]:
         """

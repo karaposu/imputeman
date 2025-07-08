@@ -1,6 +1,6 @@
-# smoke_tests/test_2_configuration_system.py
+# smoke_tests/test_6_configuration_system.py
 """
-Smoke Test 2: Test Configuration System
+Smoke Test 6: Test Configuration System
 Verifies that all configuration classes work correctly
 """
 
