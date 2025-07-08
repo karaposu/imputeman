@@ -4,11 +4,19 @@
 import asyncio
 import time
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import httpx
 
 from ..core.config import ExtractConfig
-from ..core.entities import ExtractResult, WhatToRetain, ScrapeResult
+from ..core.entities import WhatToRetain, ScrapeResult, ExtractOp
+
+# Import ExtractHero for the actual extraction work
+try:
+    from extracthero import ExtractHero
+    from extracthero.schemes import WhatToRetain as ExtractHeroWhatToRetain, ExtractConfig as ExtractHeroConfig
+    EXTRACTHERO_AVAILABLE = True
+except ImportError:
+    EXTRACTHERO_AVAILABLE = False
 
 
 class ExtractorService:
@@ -24,12 +32,322 @@ class ExtractorService:
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.config.timeout_seconds)
         )
+        
+        # Initialize ExtractHero if available
+        if EXTRACTHERO_AVAILABLE:
+            # Create ExtractHero config
+            extracthero_config = ExtractHeroConfig()
+            self.extract_hero = ExtractHero(config=extracthero_config)
+        else:
+            self.extract_hero = None
+        
+        # Usage statistics
+        self._usage_stats = {
+            "total_extractions": 0,
+            "successful_extractions": 0,
+            "total_processing_time": 0.0,
+            "average_confidence": 0.0
+        }
+    
+    # ==================== New Methods for Test Compatibility ====================
+    
+    async def extract_from_html(
+        self, 
+        html_content: str, 
+        extraction_schema: List[WhatToRetain],
+        reduce_html: bool = True
+    ) -> ExtractOp:
+        """
+        Extract structured data from HTML content
+        
+        Args:
+            html_content: Raw HTML content
+            extraction_schema: List of WhatToRetain objects defining extraction schema
+            reduce_html: Whether to reduce HTML size before extraction
+            
+        Returns:
+            ExtractOp with extracted data
+        """
+        start_time = time.time()
+        self._usage_stats["total_extractions"] += 1
+        
+        try:
+            if not self.extract_hero:
+                raise Exception("ExtractHero not available")
+            
+            # Convert WhatToRetain to ExtractHero format
+            extracthero_schema = self._convert_schema_to_extracthero(extraction_schema)
+            
+            # Use ExtractHero for extraction
+            extract_op = await self.extract_hero.extract_async(
+                text=html_content,
+                extraction_spec=extracthero_schema,
+                text_type="html",
+                reduce_html=reduce_html
+            )
+            
+            # Update usage stats
+            if extract_op.success:
+                self._usage_stats["successful_extractions"] += 1
+            
+            processing_time = time.time() - start_time
+            self._usage_stats["total_processing_time"] += processing_time
+            
+            return extract_op
+            
+        except Exception as e:
+            # Return a failed ExtractOp
+            from extracthero.schemes import FilterOp, ParseOp
+            
+            processing_time = time.time() - start_time
+            self._usage_stats["total_processing_time"] += processing_time
+            
+            # Create failed filter and parse ops
+            failed_filter_op = FilterOp(
+                success=False,
+                content=None,
+                usage=None,
+                elapsed_time=processing_time,
+                config=self.extract_hero.config if self.extract_hero else None,
+                reduced_html=None,
+                error=f"HTML extraction failed: {str(e)}"
+            )
+            
+            failed_parse_op = ParseOp(
+                success=False,
+                content=None,
+                usage=None,
+                elapsed_time=0.0,
+                config=self.extract_hero.config if self.extract_hero else None,
+                error="Parse phase not reached"
+            )
+            
+            return ExtractOp(
+                filter_op=failed_filter_op,
+                parse_op=failed_parse_op,
+                content=None
+            )
+    
+    async def extract_from_json(
+        self, 
+        json_data: Union[Dict[str, Any], str], 
+        extraction_schema: List[WhatToRetain]
+    ) -> ExtractOp:
+        """
+        Extract structured data from JSON data
+        
+        Args:
+            json_data: JSON data (dict or string)
+            extraction_schema: List of WhatToRetain objects defining extraction schema
+            
+        Returns:
+            ExtractOp with extracted data
+        """
+        start_time = time.time()
+        self._usage_stats["total_extractions"] += 1
+        
+        try:
+            if not self.extract_hero:
+                raise Exception("ExtractHero not available")
+            
+            # Convert WhatToRetain to ExtractHero format
+            extracthero_schema = self._convert_schema_to_extracthero(extraction_schema)
+            
+            # Determine input type
+            if isinstance(json_data, str):
+                text_type = "json"
+                input_data = json_data
+            else:
+                text_type = "dict"
+                input_data = json_data
+            
+            # Use ExtractHero for extraction
+            extract_op = await self.extract_hero.extract_async(
+                text=input_data,
+                extraction_spec=extracthero_schema,
+                text_type=text_type
+            )
+            
+            # Update usage stats
+            if extract_op.success:
+                self._usage_stats["successful_extractions"] += 1
+            
+            processing_time = time.time() - start_time
+            self._usage_stats["total_processing_time"] += processing_time
+            
+            return extract_op
+            
+        except Exception as e:
+            # Return a failed ExtractOp
+            from extracthero.schemes import FilterOp, ParseOp
+            
+            processing_time = time.time() - start_time
+            self._usage_stats["total_processing_time"] += processing_time
+            
+            # Create failed filter and parse ops
+            failed_filter_op = FilterOp(
+                success=False,
+                content=None,
+                usage=None,
+                elapsed_time=processing_time,
+                config=self.extract_hero.config if self.extract_hero else None,
+                reduced_html=None,
+                error=f"JSON extraction failed: {str(e)}"
+            )
+            
+            failed_parse_op = ParseOp(
+                success=False,
+                content=None,
+                usage=None,
+                elapsed_time=0.0,
+                config=self.extract_hero.config if self.extract_hero else None,
+                error="Parse phase not reached"
+            )
+            
+            return ExtractOp(
+                filter_op=failed_filter_op,
+                parse_op=failed_parse_op,
+                content=None
+            )
+    
+    async def extract_batch(
+        self, 
+        html_contents: Dict[str, str], 
+        extraction_schema: List[WhatToRetain]
+    ) -> Dict[str, ExtractOp]:
+        """
+        Extract structured data from multiple HTML contents
+        
+        Args:
+            html_contents: Dictionary of identifier -> HTML content
+            extraction_schema: List of WhatToRetain objects defining extraction schema
+            
+        Returns:
+            Dictionary of identifier -> ExtractOp
+        """
+        extract_tasks = []
+        
+        for identifier, html_content in html_contents.items():
+            task = self._extract_single_html(identifier, html_content, extraction_schema)
+            extract_tasks.append(task)
+        
+        results = await asyncio.gather(*extract_tasks, return_exceptions=True)
+        
+        # Process results
+        batch_results = {}
+        for identifier, result in zip(html_contents.keys(), results):
+            if isinstance(result, Exception):
+                # Create failed ExtractOp
+                from extracthero.schemes import FilterOp, ParseOp
+                
+                failed_filter_op = FilterOp(
+                    success=False,
+                    content=None,
+                    usage=None,
+                    elapsed_time=0.0,
+                    config=self.extract_hero.config if self.extract_hero else None,
+                    reduced_html=None,
+                    error=str(result)
+                )
+                
+                failed_parse_op = ParseOp(
+                    success=False,
+                    content=None,
+                    usage=None,
+                    elapsed_time=0.0,
+                    config=self.extract_hero.config if self.extract_hero else None,
+                    error="Parse phase not reached"
+                )
+                
+                batch_results[identifier] = ExtractOp(
+                    filter_op=failed_filter_op,
+                    parse_op=failed_parse_op,
+                    content=None
+                )
+            else:
+                batch_results[identifier] = result
+        
+        return batch_results
+    
+    async def _extract_single_html(
+        self, 
+        identifier: str, 
+        html_content: str, 
+        extraction_schema: List[WhatToRetain]
+    ) -> ExtractOp:
+        """Helper method for batch extraction"""
+        start_time = time.time()
+        
+        try:
+            if not self.extract_hero:
+                raise Exception("ExtractHero not available")
+            
+            # Convert schema
+            extracthero_schema = self._convert_schema_to_extracthero(extraction_schema)
+            
+            # Extract using ExtractHero
+            extract_op = await self.extract_hero.extract_async(
+                text=html_content,
+                extraction_spec=extracthero_schema,
+                text_type="html"
+            )
+            
+            return extract_op
+            
+        except Exception as e:
+            # Return failed ExtractOp
+            from extracthero.schemes import FilterOp, ParseOp
+            
+            processing_time = time.time() - start_time
+            
+            failed_filter_op = FilterOp(
+                success=False,
+                content=None,
+                usage=None,
+                elapsed_time=processing_time,
+                config=self.extract_hero.config if self.extract_hero else None,
+                reduced_html=None,
+                error=f"Batch extraction failed: {str(e)}"
+            )
+            
+            failed_parse_op = ParseOp(
+                success=False,
+                content=None,
+                usage=None,
+                elapsed_time=0.0,
+                config=self.extract_hero.config if self.extract_hero else None,
+                error="Parse phase not reached"
+            )
+            
+            return ExtractOp(
+                filter_op=failed_filter_op,
+                parse_op=failed_parse_op,
+                content=None
+            )
+    
+    def set_confidence_threshold(self, threshold: float):
+        """Set confidence threshold for extractions"""
+        self.config.confidence_threshold = threshold
+    
+    def get_usage_stats(self) -> Dict[str, Any]:
+        """Get service usage statistics"""
+        stats = self._usage_stats.copy()
+        if stats["total_extractions"] > 0:
+            stats["success_rate"] = stats["successful_extractions"] / stats["total_extractions"]
+            stats["average_processing_time"] = stats["total_processing_time"] / stats["total_extractions"]
+        else:
+            stats["success_rate"] = 0.0
+            stats["average_processing_time"] = 0.0
+        
+        return stats
+    
+    # ==================== Original Methods (for ScrapeResult compatibility) ====================
     
     async def extract_from_scrapes(
         self, 
         scrape_results: Dict[str, ScrapeResult], 
         schema: List[WhatToRetain]
-    ) -> Dict[str, ExtractResult]:
+    ) -> Dict[str, ExtractOp]:
         """
         Extract structured data from multiple scrape results
         
@@ -38,7 +356,7 @@ class ExtractorService:
             schema: List of WhatToRetain objects defining extraction schema
             
         Returns:
-            Dictionary of URL -> ExtractResult
+            Dictionary of URL -> ExtractOp
         """
         # Filter successful scrapes
         valid_scrapes = {
@@ -61,11 +379,32 @@ class ExtractorService:
         extract_results = {}
         for (url, _), result in zip(valid_scrapes.items(), results):
             if isinstance(result, Exception):
-                extract_results[url] = ExtractResult(
-                    url=url,
-                    content=None,
+                # Create failed ExtractOp
+                from extracthero.schemes import FilterOp, ParseOp
+                
+                failed_filter_op = FilterOp(
                     success=False,
-                    error_message=str(result)
+                    content=None,
+                    usage=None,
+                    elapsed_time=0.0,
+                    config=self.extract_hero.config if self.extract_hero else None,
+                    reduced_html=None,
+                    error=str(result)
+                )
+                
+                failed_parse_op = ParseOp(
+                    success=False,
+                    content=None,
+                    usage=None,
+                    elapsed_time=0.0,
+                    config=self.extract_hero.config if self.extract_hero else None,
+                    error="Parse phase not reached"
+                )
+                
+                extract_results[url] = ExtractOp(
+                    filter_op=failed_filter_op,
+                    parse_op=failed_parse_op,
+                    content=None
                 )
             else:
                 extract_results[url] = result
@@ -77,7 +416,7 @@ class ExtractorService:
         url: str, 
         scrape_result: ScrapeResult, 
         schema: List[WhatToRetain]
-    ) -> ExtractResult:
+    ) -> ExtractOp:
         """
         Extract structured data from a single scraped page
         
@@ -87,418 +426,73 @@ class ExtractorService:
             schema: Extraction schema
             
         Returns:
-            ExtractResult with extracted data
+            ExtractOp with extracted data
         """
         start_time = time.time()
         
         try:
-            # Preprocess HTML content
-            cleaned_html = self._preprocess_html(scrape_result.data)
+            if not self.extract_hero:
+                raise Exception("ExtractHero not available")
             
-            # Choose extraction method based on config
-            if self.config.extraction_model.startswith("gpt"):
-                result = await self._extract_with_openai(
-                    cleaned_html, schema, url
-                )
-            else:
-                # Fallback to rule-based extraction
-                result = await self._extract_with_rules(
-                    cleaned_html, schema, url
-                )
+            # Use ExtractHero for extraction
+            extracthero_schema = self._convert_schema_to_extracthero(schema)
             
-            result.elapsed_time = time.time() - start_time
-            return result
+            extract_op = await self.extract_hero.extract_async(
+                text=scrape_result.data,
+                extraction_spec=extracthero_schema,
+                text_type="html"
+            )
+            
+            return extract_op
             
         except Exception as e:
+            # Return failed ExtractOp
+            from extracthero.schemes import FilterOp, ParseOp
+            
             elapsed_time = time.time() - start_time
-            return ExtractResult(
-                url=url,
+            
+            failed_filter_op = FilterOp(
+                success=False,
                 content=None,
+                usage=None,
                 elapsed_time=elapsed_time,
+                config=self.extract_hero.config if self.extract_hero else None,
+                reduced_html=None,
+                error=f"Extraction failed: {str(e)}"
+            )
+            
+            failed_parse_op = ParseOp(
                 success=False,
-                error_message=f"Extraction failed: {str(e)}"
-            )
-    
-    def _preprocess_html(self, html: str) -> str:
-        """
-        Clean and preprocess HTML for better extraction
-        
-        Args:
-            html: Raw HTML content
-            
-        Returns:
-            Cleaned HTML suitable for extraction
-        """
-        if not html:
-            return ""
-        
-        # Remove script and style tags
-        import re
-        
-        # Remove scripts
-        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Remove styles
-        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Remove comments
-        html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
-        
-        # Normalize whitespace
-        html = re.sub(r'\s+', ' ', html)
-        
-        # Truncate if too long (to fit within token limits)
-        max_chars = self.config.max_tokens * 3  # Rough estimate
-        if len(html) > max_chars:
-            html = html[:max_chars] + "..."
-        
-        return html.strip()
-    
-    async def _extract_with_openai(
-        self, 
-        html: str, 
-        schema: List[WhatToRetain], 
-        url: str
-    ) -> ExtractResult:
-        """
-        Extract data using OpenAI GPT models
-        
-        Args:
-            html: Cleaned HTML content
-            schema: Extraction schema
-            url: Source URL
-            
-        Returns:
-            ExtractResult with extracted data
-        """
-        try:
-            # TODO: Replace with your actual OpenAI integration
-            # This is where you'd call your existing extractor.extract_async method
-            # Example:
-            # extract_op = await self.extractor.extract_async(
-            #     html,
-            #     schema,
-            #     text_type="html"
-            # )
-            # return self._convert_to_extract_result(extract_op, url)
-            
-            # Create prompt for extraction
-            prompt = self._build_extraction_prompt(html, schema)
-            
-            # Call OpenAI API
-            headers = {
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": self.config.extraction_model,
-                "messages": [
-                    {"role": "system", "content": "You are a data extraction expert. Extract the requested information from HTML content and return it as valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": self.config.max_tokens,
-                "temperature": 0.1  # Low temperature for consistent extraction
-            }
-            
-            response = await self.client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload
-            )
-            
-            if response.status_code != 200:
-                raise Exception(f"OpenAI API error: {response.status_code} - {response.text}")
-            
-            result_data = response.json()
-            
-            # Parse extracted content
-            extracted_text = result_data["choices"][0]["message"]["content"]
-            extracted_data = self._parse_extraction_result(extracted_text, schema)
-            
-            # Calculate costs and confidence
-            usage = result_data.get("usage", {})
-            tokens_used = usage.get("total_tokens", 0)
-            cost = self._calculate_cost(tokens_used, self.config.extraction_model)
-            confidence = self._estimate_confidence(extracted_data, schema)
-            
-            return ExtractResult(
-                url=url,
-                content=extracted_data,
-                confidence_score=confidence,
-                tokens_used=tokens_used,
-                cost=cost,
-                extraction_method=self.config.extraction_model,
-                success=bool(extracted_data),
-                metadata={
-                    "prompt_length": len(prompt),
-                    "response_length": len(extracted_text),
-                    "api_model": self.config.extraction_model
-                }
-            )
-            
-        except Exception as e:
-            return ExtractResult(
-                url=url,
                 content=None,
-                success=False,
-                error_message=f"OpenAI extraction error: {str(e)}",
-                extraction_method=self.config.extraction_model
+                usage=None,
+                elapsed_time=0.0,
+                config=self.extract_hero.config if self.extract_hero else None,
+                error="Parse phase not reached"
+            )
+            
+            return ExtractOp(
+                filter_op=failed_filter_op,
+                parse_op=failed_parse_op,
+                content=None
             )
     
-    def _build_extraction_prompt(self, html: str, schema: List[WhatToRetain]) -> str:
-        """
-        Build extraction prompt for AI model
-        
-        Args:
-            html: HTML content to extract from
-            schema: List of fields to extract
-            
-        Returns:
-            Formatted prompt string
-        """
-        # Build schema description
-        schema_desc = "Extract the following fields:\n"
-        for field in schema:
-            schema_desc += f"- {field.name}: {field.desc}"
-            if field.example:
-                schema_desc += f" (example: {field.example})"
-            schema_desc += "\n"
-        
-        prompt = f"""
-{schema_desc}
-
-Return the extracted data as a JSON object with the field names as keys. If a field cannot be found, use null as the value.
-
-HTML Content:
-{html}
-
-JSON Response:
-"""
-        return prompt
+    # ==================== Helper Methods ====================
     
-    def _parse_extraction_result(self, response_text: str, schema: List[WhatToRetain]) -> Dict[str, Any]:
-        """
-        Parse AI model response into structured data
+    def _convert_schema_to_extracthero(self, schema: List[WhatToRetain]) -> List[ExtractHeroWhatToRetain]:
+        """Convert WhatToRetain schema to ExtractHero format"""
+        if not EXTRACTHERO_AVAILABLE:
+            raise Exception("ExtractHero not available")
         
-        Args:
-            response_text: Raw response from AI model
-            schema: Expected schema
-            
-        Returns:
-            Parsed structured data
-        """
-        try:
-            # Try to parse as JSON
-            if "{" in response_text and "}" in response_text:
-                # Extract JSON part
-                start = response_text.find("{")
-                end = response_text.rfind("}") + 1
-                json_text = response_text[start:end]
-                
-                data = json.loads(json_text)
-                
-                # Validate against schema
-                validated_data = {}
-                for field in schema:
-                    field_name = field.name
-                    if field_name in data:
-                        validated_data[field_name] = data[field_name]
-                    else:
-                        validated_data[field_name] = None
-                
-                return validated_data
-            
-        except (json.JSONDecodeError, ValueError):
-            pass
-        
-        # Fallback: Try to extract field values using simple patterns
-        fallback_data = {}
-        for field in schema:
-            fallback_data[field.name] = self._extract_field_fallback(
-                response_text, field
+        extracthero_schema = []
+        for item in schema:
+            extracthero_item = ExtractHeroWhatToRetain(
+                name=item.name,
+                desc=item.desc,
+                example=item.example
             )
+            extracthero_schema.append(extracthero_item)
         
-        return fallback_data
-    
-    def _extract_field_fallback(self, text: str, field: WhatToRetain) -> Optional[str]:
-        """
-        Fallback extraction using simple pattern matching
-        
-        Args:
-            text: Text to extract from
-            field: Field definition
-            
-        Returns:
-            Extracted value or None
-        """
-        import re
-        
-        field_name = field.name.lower()
-        
-        # Look for patterns like "field_name: value" or "field_name is value"
-        patterns = [
-            rf"{field_name}[:\s]+([^\n,]+)",
-            rf"{field_name}[:\s]+([\d,]+)",
-            rf"{field.desc}[:\s]+([^\n,]+)"
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip()
-                # Clean up common prefixes/suffixes
-                value = re.sub(r'^["\'\s]+|["\'\s]+$', '', value)
-                return value if value else None
-        
-        return None
-    
-    async def _extract_with_rules(
-        self, 
-        html: str, 
-        schema: List[WhatToRetain], 
-        url: str
-    ) -> ExtractResult:
-        """
-        Extract data using rule-based methods (fallback)
-        
-        Args:
-            html: HTML content
-            schema: Extraction schema
-            url: Source URL
-            
-        Returns:
-            ExtractResult with extracted data
-        """
-        # Simple rule-based extraction for fallback
-        extracted_data = {}
-        
-        for field in schema:
-            value = self._extract_field_with_rules(html, field)
-            extracted_data[field.name] = value
-        
-        confidence = 0.6 if any(v for v in extracted_data.values()) else 0.2
-        
-        return ExtractResult(
-            url=url,
-            content=extracted_data,
-            confidence_score=confidence,
-            tokens_used=0,
-            cost=0.0,  # Rule-based extraction is free
-            extraction_method="rule_based",
-            success=bool(any(v for v in extracted_data.values())),
-            metadata={"method": "rule_based_fallback"}
-        )
-    
-    def _extract_field_with_rules(self, html: str, field: WhatToRetain) -> Optional[str]:
-        """
-        Extract single field using HTML parsing rules
-        
-        Args:
-            html: HTML content
-            field: Field to extract
-            
-        Returns:
-            Extracted value or None
-        """
-        import re
-        
-        # Try different extraction strategies based on field description
-        desc_lower = field.desc.lower()
-        
-        if "name" in desc_lower and "company" in desc_lower:
-            # Look for company name in title, h1, or meta tags
-            patterns = [
-                r'<title[^>]*>([^<]+)</title>',
-                r'<h1[^>]*>([^<]+)</h1>',
-                r'<meta[^>]*name=["\']?title["\']?[^>]*content=["\']([^"\']+)["\']'
-            ]
-        elif "revenue" in desc_lower or "sales" in desc_lower:
-            # Look for revenue/financial numbers
-            patterns = [
-                r'revenue[:\s]*\$?([\d,\.]+[MBK]?)',
-                r'sales[:\s]*\$?([\d,\.]+[MBK]?)'
-            ]
-        elif "year" in desc_lower or "founded" in desc_lower:
-            # Look for years
-            patterns = [
-                r'founded[:\s]*(\d{4})',
-                r'established[:\s]*(\d{4})',
-                r'since[:\s]*(\d{4})'
-            ]
-        else:
-            # Generic text extraction
-            patterns = [
-                rf'{field.name}[:\s]+([^\n,<]+)',
-                rf'{desc_lower}[:\s]+([^\n,<]+)'
-            ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip()
-                # Clean HTML entities and tags
-                value = re.sub(r'<[^>]+>', '', value)
-                value = re.sub(r'&[^;]+;', '', value)
-                return value if value else None
-        
-        return None
-    
-    def _calculate_cost(self, tokens: int, model: str) -> float:
-        """
-        Calculate cost based on token usage and model
-        
-        Args:
-            tokens: Number of tokens used
-            model: Model name
-            
-        Returns:
-            Cost in dollars
-        """
-        # Rough cost estimates (update with current pricing)
-        cost_per_1k_tokens = {
-            "gpt-4": 0.03,
-            "gpt-4-turbo": 0.01,
-            "gpt-3.5-turbo": 0.002
-        }
-        
-        rate = cost_per_1k_tokens.get(model, 0.01)
-        return (tokens / 1000) * rate
-    
-    def _estimate_confidence(self, extracted_data: Dict[str, Any], schema: List[WhatToRetain]) -> float:
-        """
-        Estimate confidence score based on extraction completeness
-        
-        Args:
-            extracted_data: Extracted data
-            schema: Expected schema
-            
-        Returns:
-            Confidence score between 0 and 1
-        """
-        if not extracted_data:
-            return 0.0
-        
-        # Count non-null values
-        non_null_count = sum(1 for v in extracted_data.values() if v is not None)
-        total_fields = len(schema)
-        
-        if total_fields == 0:
-            return 0.0
-        
-        # Base confidence on completeness
-        completeness = non_null_count / total_fields
-        
-        # Adjust based on data quality (simple heuristics)
-        quality_score = 1.0
-        for value in extracted_data.values():
-            if value is not None:
-                # Penalize very short or very long values
-                if isinstance(value, str):
-                    if len(value) < 2 or len(value) > 200:
-                        quality_score *= 0.9
-        
-        return min(completeness * quality_score, 1.0)
+        return extracthero_schema
     
     async def close(self):
         """Clean up resources"""

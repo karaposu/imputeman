@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from brightdata.models import ScrapeResult
 
+from extracthero import ExtractOp,ParseOp, FilterOp
+
 
 @dataclass
 class WhatToRetain:
@@ -54,19 +56,19 @@ class SerpResult:
 #     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class ExtractResult:
-    """Result from data extraction operation"""
-    url: str
-    content: Optional[Dict[str, Any]]
-    confidence_score: float = 0.0
-    tokens_used: int = 0
-    cost: float = 0.0
-    elapsed_time: float = 0.0
-    extraction_method: str = "default"
-    success: bool = False
-    error_message: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+# @dataclass
+# class ExtractResult:
+#     """Result from data extraction operation"""
+#     url: str
+#     content: Optional[Dict[str, Any]]
+#     confidence_score: float = 0.0
+#     tokens_used: int = 0
+#     cost: float = 0.0
+#     elapsed_time: float = 0.0
+#     extraction_method: str = "default"
+#     success: bool = False
+#     error_message: Optional[str] = None
+#     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -76,7 +78,7 @@ class ImputeResult:
     schema: List[WhatToRetain]
     serp_result: Optional[SerpResult] = None
     scrape_results: Dict[str, ScrapeResult] = field(default_factory=dict)
-    extract_results: Dict[str, ExtractResult] = field(default_factory=dict)
+    extract_results: Dict[str, ExtractOp] = field(default_factory=dict)
     final_data: Dict[str, Any] = field(default_factory=dict)
     total_cost: float = 0.0
     total_elapsed_time: float = 0.0

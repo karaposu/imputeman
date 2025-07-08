@@ -387,8 +387,8 @@ async def test_service_error_handling():
                 print(f"   🔗 {url}: Status: {result.status}")
                 if result.status != "ready":
                     error_count += 1
-                    if result.error_message:
-                        print(f"      Error: {result.error_message}")
+                    if result.error:
+                        print(f"      Error: {result.error}")
             else:
                 error_count += 1
                 print(f"   🔗 {url}: ❌ No result")

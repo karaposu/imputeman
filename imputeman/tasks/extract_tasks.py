@@ -4,7 +4,7 @@
 from typing import Dict, Any, List
 from prefect import task, get_run_logger
 
-from ..core.entities import ExtractResult, ScrapeResult, WhatToRetain
+from ..core.entities import ExtractOp, ScrapeResult, WhatToRetain
 from ..core.config import ExtractConfig
 from ..services import get_service_registry
 
@@ -18,7 +18,7 @@ async def extract_data_task(
     scrape_results: Dict[str, ScrapeResult],
     schema: List[WhatToRetain],
     config: ExtractConfig
-) -> Dict[str, ExtractResult]:
+) -> Dict[str, ExtractOp]:
     """
     Extract structured data from scraped content
     
@@ -28,7 +28,7 @@ async def extract_data_task(
         config: Extraction configuration
         
     Returns:
-        Dictionary mapping URLs to ExtractResult objects
+        Dictionary mapping URLs to ExtractOp objects
     """
     logger = get_run_logger()
     
@@ -68,9 +68,9 @@ async def extract_data_task(
     tags=["extract", "validate"]
 )
 async def validate_extractions_task(
-    extract_results: Dict[str, ExtractResult],
+    extract_results: Dict[str, ExtractOp],
     config: ExtractConfig
-) -> Dict[str, ExtractResult]:
+) -> Dict[str, ExtractOp]:
     """
     Validate extraction results and filter by confidence threshold
     
@@ -105,7 +105,7 @@ async def validate_extractions_task(
     tags=["extract", "aggregate"]
 )
 async def aggregate_final_data_task(
-    extract_results: Dict[str, ExtractResult]
+    extract_results: Dict[str, ExtractOp]
 ) -> Dict[str, Any]:
     """
     Aggregate extraction results into final dataset
