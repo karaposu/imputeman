@@ -8,7 +8,9 @@ from typing import Dict, Any, List, Optional, Union
 import httpx
 
 from ..core.config import ExtractConfig
-from ..core.entities import WhatToRetain, ScrapeResult, ExtractOp
+from ..core.entities import WhatToRetain, ScrapeResult
+from brightdata.models import ScrapeResult
+from extracthero import ExtractOp
 
 # Import ExtractHero for the actual extraction work
 try:
@@ -40,14 +42,6 @@ class ExtractorService:
             self.extract_hero = ExtractHero(config=extracthero_config)
         else:
             self.extract_hero = None
-        
-        # Usage statistics
-        self._usage_stats = {
-            "total_extractions": 0,
-            "successful_extractions": 0,
-            "total_processing_time": 0.0,
-            "average_confidence": 0.0
-        }
     
     # ==================== New Methods for Test Compatibility ====================
     
@@ -66,11 +60,8 @@ class ExtractorService:
             reduce_html: Whether to reduce HTML size before extraction
             
         Returns:
-            ExtractOp with extracted data
+            ExtractOp with extracted data (includes usage and elapsed_time)
         """
-        start_time = time.time()
-        self._usage_stats["total_extractions"] += 1
-        
         try:
             if not self.extract_hero:
                 raise Exception("ExtractHero not available")
@@ -86,12 +77,11 @@ class ExtractorService:
                 reduce_html=reduce_html
             )
             
-            # Update usage stats
-            if extract_op.success:
-                self._usage_stats["successful_extractions"] += 1
-            
-            processing_time = time.time() - start_time
-            self._usage_stats["total_processing_time"] += processing_time
+            # ExtractOp already contains all metrics we need:
+            # - extract_op.success
+            # - extract_op.elapsed_time
+            # - extract_op.usage
+            # - extract_op.content
             
             return extract_op
             
@@ -99,15 +89,14 @@ class ExtractorService:
             # Return a failed ExtractOp
             from extracthero.schemes import FilterOp, ParseOp
             
-            processing_time = time.time() - start_time
-            self._usage_stats["total_processing_time"] += processing_time
+            start_time = time.time()
             
             # Create failed filter and parse ops
             failed_filter_op = FilterOp(
                 success=False,
                 content=None,
                 usage=None,
-                elapsed_time=processing_time,
+                elapsed_time=0.0,
                 config=self.extract_hero.config if self.extract_hero else None,
                 reduced_html=None,
                 error=f"HTML extraction failed: {str(e)}"
@@ -122,9 +111,11 @@ class ExtractorService:
                 error="Parse phase not reached"
             )
             
-            return ExtractOp(
+            # Create ExtractOp using from_operations
+            return ExtractOp.from_operations(
                 filter_op=failed_filter_op,
                 parse_op=failed_parse_op,
+                start_time=start_time,
                 content=None
             )
     
@@ -141,11 +132,8 @@ class ExtractorService:
             extraction_schema: List of WhatToRetain objects defining extraction schema
             
         Returns:
-            ExtractOp with extracted data
+            ExtractOp with extracted data (includes usage and elapsed_time)
         """
-        start_time = time.time()
-        self._usage_stats["total_extractions"] += 1
-        
         try:
             if not self.extract_hero:
                 raise Exception("ExtractHero not available")
@@ -168,28 +156,20 @@ class ExtractorService:
                 text_type=text_type
             )
             
-            # Update usage stats
-            if extract_op.success:
-                self._usage_stats["successful_extractions"] += 1
-            
-            processing_time = time.time() - start_time
-            self._usage_stats["total_processing_time"] += processing_time
-            
             return extract_op
             
         except Exception as e:
             # Return a failed ExtractOp
             from extracthero.schemes import FilterOp, ParseOp
             
-            processing_time = time.time() - start_time
-            self._usage_stats["total_processing_time"] += processing_time
+            start_time = time.time()
             
             # Create failed filter and parse ops
             failed_filter_op = FilterOp(
                 success=False,
                 content=None,
                 usage=None,
-                elapsed_time=processing_time,
+                elapsed_time=0.0,
                 config=self.extract_hero.config if self.extract_hero else None,
                 reduced_html=None,
                 error=f"JSON extraction failed: {str(e)}"
@@ -204,9 +184,10 @@ class ExtractorService:
                 error="Parse phase not reached"
             )
             
-            return ExtractOp(
+            return ExtractOp.from_operations(
                 filter_op=failed_filter_op,
                 parse_op=failed_parse_op,
+                start_time=start_time,
                 content=None
             )
     
@@ -240,6 +221,8 @@ class ExtractorService:
                 # Create failed ExtractOp
                 from extracthero.schemes import FilterOp, ParseOp
                 
+                start_time = time.time()
+                
                 failed_filter_op = FilterOp(
                     success=False,
                     content=None,
@@ -259,9 +242,10 @@ class ExtractorService:
                     error="Parse phase not reached"
                 )
                 
-                batch_results[identifier] = ExtractOp(
+                batch_results[identifier] = ExtractOp.from_operations(
                     filter_op=failed_filter_op,
                     parse_op=failed_parse_op,
+                    start_time=start_time,
                     content=None
                 )
             else:
@@ -276,8 +260,6 @@ class ExtractorService:
         extraction_schema: List[WhatToRetain]
     ) -> ExtractOp:
         """Helper method for batch extraction"""
-        start_time = time.time()
-        
         try:
             if not self.extract_hero:
                 raise Exception("ExtractHero not available")
@@ -298,13 +280,13 @@ class ExtractorService:
             # Return failed ExtractOp
             from extracthero.schemes import FilterOp, ParseOp
             
-            processing_time = time.time() - start_time
+            start_time = time.time()
             
             failed_filter_op = FilterOp(
                 success=False,
                 content=None,
                 usage=None,
-                elapsed_time=processing_time,
+                elapsed_time=0.0,
                 config=self.extract_hero.config if self.extract_hero else None,
                 reduced_html=None,
                 error=f"Batch extraction failed: {str(e)}"
@@ -319,9 +301,10 @@ class ExtractorService:
                 error="Parse phase not reached"
             )
             
-            return ExtractOp(
+            return ExtractOp.from_operations(
                 filter_op=failed_filter_op,
                 parse_op=failed_parse_op,
+                start_time=start_time,
                 content=None
             )
     
@@ -330,16 +313,17 @@ class ExtractorService:
         self.config.confidence_threshold = threshold
     
     def get_usage_stats(self) -> Dict[str, Any]:
-        """Get service usage statistics"""
-        stats = self._usage_stats.copy()
-        if stats["total_extractions"] > 0:
-            stats["success_rate"] = stats["successful_extractions"] / stats["total_extractions"]
-            stats["average_processing_time"] = stats["total_processing_time"] / stats["total_extractions"]
-        else:
-            stats["success_rate"] = 0.0
-            stats["average_processing_time"] = 0.0
+        """
+        Get usage statistics from ExtractOp results
         
-        return stats
+        Note: This now returns a simple message since we don't track
+        cumulative stats. Individual ExtractOp objects contain their
+        own usage and timing information.
+        """
+        return {
+            "message": "Usage statistics are available in individual ExtractOp results",
+            "info": "Each ExtractOp contains 'usage' and 'elapsed_time' fields"
+        }
     
     # ==================== Original Methods (for ScrapeResult compatibility) ====================
     
@@ -382,6 +366,8 @@ class ExtractorService:
                 # Create failed ExtractOp
                 from extracthero.schemes import FilterOp, ParseOp
                 
+                start_time = time.time()
+                
                 failed_filter_op = FilterOp(
                     success=False,
                     content=None,
@@ -401,9 +387,10 @@ class ExtractorService:
                     error="Parse phase not reached"
                 )
                 
-                extract_results[url] = ExtractOp(
+                extract_results[url] = ExtractOp.from_operations(
                     filter_op=failed_filter_op,
                     parse_op=failed_parse_op,
+                    start_time=start_time,
                     content=None
                 )
             else:
@@ -426,10 +413,8 @@ class ExtractorService:
             schema: Extraction schema
             
         Returns:
-            ExtractOp with extracted data
+            ExtractOp with extracted data (includes usage and elapsed_time)
         """
-        start_time = time.time()
-        
         try:
             if not self.extract_hero:
                 raise Exception("ExtractHero not available")
@@ -449,13 +434,13 @@ class ExtractorService:
             # Return failed ExtractOp
             from extracthero.schemes import FilterOp, ParseOp
             
-            elapsed_time = time.time() - start_time
+            start_time = time.time()
             
             failed_filter_op = FilterOp(
                 success=False,
                 content=None,
                 usage=None,
-                elapsed_time=elapsed_time,
+                elapsed_time=0.0,
                 config=self.extract_hero.config if self.extract_hero else None,
                 reduced_html=None,
                 error=f"Extraction failed: {str(e)}"
@@ -470,9 +455,10 @@ class ExtractorService:
                 error="Parse phase not reached"
             )
             
-            return ExtractOp(
+            return ExtractOp.from_operations(
                 filter_op=failed_filter_op,
                 parse_op=failed_parse_op,
+                start_time=start_time,
                 content=None
             )
     

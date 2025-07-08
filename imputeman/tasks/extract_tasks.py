@@ -1,12 +1,14 @@
 # imputeman/tasks/extract_tasks.py
 """Data extraction tasks using Prefect"""
 
+import time
 from typing import Dict, Any, List
 from prefect import task, get_run_logger
 
-from ..core.entities import ExtractOp, ScrapeResult, WhatToRetain
+from ..core.entities import ScrapeResult, WhatToRetain
 from ..core.config import ExtractConfig
 from ..services import get_service_registry
+from extracthero import ExtractOp
 
 
 @task(
@@ -48,13 +50,30 @@ async def extract_data_task(
     registry = get_service_registry()
     extract_results = await registry.extractor.extract_from_scrapes(valid_scrapes, schema)
     
-    # Log results
+    # Log results using ExtractOp's built-in metrics
     successful_extractions = sum(1 for r in extract_results.values() if r.success)
-    total_cost = sum(r.cost for r in extract_results.values())
-    total_tokens = sum(r.tokens_used for r in extract_results.values())
+    
+    # Calculate totals from ExtractOp usage data
+    total_cost = 0.0
+    total_tokens = 0
+    
+    for extract_op in extract_results.values():
+        if extract_op.usage:
+            # Add costs if present in usage dict
+            if 'cost' in extract_op.usage:
+                total_cost += extract_op.usage['cost']
+            # Add tokens if present (could be under various keys)
+            for key in ['total_tokens', 'tokens', 'prompt_tokens', 'completion_tokens']:
+                if key in extract_op.usage:
+                    if key in ['prompt_tokens', 'completion_tokens']:
+                        total_tokens += extract_op.usage[key]
+                    elif key == 'total_tokens' or key == 'tokens':
+                        total_tokens = extract_op.usage[key]  # Use total if available
+                        break
     
     logger.info(f"Extraction completed: {successful_extractions}/{len(valid_scrapes)} successful")
-    logger.info(f"Total cost: ${total_cost:.2f}, Total tokens: {total_tokens}")
+    if total_cost > 0 or total_tokens > 0:
+        logger.info(f"Total cost: ${total_cost:.2f}, Total tokens: {total_tokens}")
     
     return extract_results
 
@@ -72,31 +91,36 @@ async def validate_extractions_task(
     config: ExtractConfig
 ) -> Dict[str, ExtractOp]:
     """
-    Validate extraction results and filter by confidence threshold
+    Validate extraction results based on success status
+    
+    Note: ExtractOp doesn't have a confidence_score field, so we validate
+    based on the success flag and whether content exists.
     
     Args:
         extract_results: Raw extraction results
-        config: Extraction configuration with confidence threshold
+        config: Extraction configuration
         
     Returns:
-        Filtered extraction results meeting quality criteria
+        Filtered extraction results that were successful
     """
     logger = get_run_logger()
     
     valid_extractions = {}
-    low_confidence_count = 0
+    failed_count = 0
     
     for url, result in extract_results.items():
-        if result.success and result.confidence_score >= config.confidence_threshold:
+        if result.success and result.content is not None:
             valid_extractions[url] = result
         else:
-            if result.success:
-                low_confidence_count += 1
-                logger.debug(f"Filtering out low confidence extraction from {url} (confidence: {result.confidence_score})")
+            failed_count += 1
+            if not result.success:
+                logger.debug(f"Filtering out failed extraction from {url}")
+            else:
+                logger.debug(f"Filtering out extraction with no content from {url}")
     
     logger.info(f"Validation completed: {len(valid_extractions)} valid extractions")
-    if low_confidence_count > 0:
-        logger.info(f"Filtered out {low_confidence_count} low-confidence extractions")
+    if failed_count > 0:
+        logger.info(f"Filtered out {failed_count} failed/empty extractions")
     
     return valid_extractions
 
@@ -129,20 +153,31 @@ async def aggregate_final_data_task(
     for url, result in extract_results.items():
         if result.success and result.content:
             source_urls.append(url)
-            # Merge content, handling conflicts by keeping highest confidence
-            for key, value in result.content.items():
-                if key not in final_data:
-                    final_data[key] = {
-                        "value": value,
-                        "confidence": result.confidence_score,
-                        "source": url
-                    }
-                elif result.confidence_score > final_data[key]["confidence"]:
-                    final_data[key] = {
-                        "value": value,
-                        "confidence": result.confidence_score,
-                        "source": url
-                    }
+            # ExtractOp.content can be a dict or other structure
+            if isinstance(result.content, dict):
+                # Merge content, using most recent values
+                for key, value in result.content.items():
+                    if key not in final_data:
+                        final_data[key] = {
+                            "value": value,
+                            "source": url,
+                            "extraction_time": result.elapsed_time
+                        }
+                    else:
+                        # Keep the value from the fastest extraction (assuming faster = more confident)
+                        if result.elapsed_time < final_data[key].get("extraction_time", float('inf')):
+                            final_data[key] = {
+                                "value": value,
+                                "source": url,
+                                "extraction_time": result.elapsed_time
+                            }
+            else:
+                # If content is not a dict, store it under a generic key
+                final_data[f"content_from_{url}"] = {
+                    "value": result.content,
+                    "source": url,
+                    "extraction_time": result.elapsed_time
+                }
     
     # Add metadata
     final_data["_metadata"] = {
