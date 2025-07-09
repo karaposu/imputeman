@@ -2,8 +2,7 @@
 """
 Imputeman - AI-powered context-aware data imputation pipeline
 Main orchestrator class for streaming SERP → Scrape → Extract operations
-
-# python -m imputeman.imputeman
+with optional DigiKey pre-processing
 """
 
 import asyncio
@@ -18,6 +17,16 @@ from .core.entities import EntityToImpute, WhatToRetain
 from .core.config import PipelineConfig, get_development_config, get_production_config
 from .services import ServiceRegistry
 from extracthero.schemes import ExtractOp
+
+# Import DigiKey functionality
+try:
+    from imputemodule.imputemodule import Imputemodule
+    from imputemodule.models import ImputeOp
+    from brightdata.auto import scrape_url_async
+    DIGIKEY_AVAILABLE = True
+except ImportError:
+    DIGIKEY_AVAILABLE = False
+    ImputeOp = None
 
 
 logger = logging.getLogger(__name__)
@@ -142,6 +151,18 @@ class ExtractionTimingMetrics:
 
 
 @dataclass
+class DigikeyResult:
+    """Result from DigiKey pre-processing phase"""
+    success: bool
+    query: str
+    data: Any = None
+    url: str = ""
+    elapsed_time: float = 0.0
+    error: Optional[str] = None
+    hits: int = 0
+
+
+@dataclass
 class ImputemanResult:
     """Comprehensive result from Imputeman pipeline execution"""
     success: bool
@@ -152,15 +173,20 @@ class ImputemanResult:
     serp_urls: List[str] = field(default_factory=list)
     extract_results: Dict[str, ExtractOp] = field(default_factory=dict)
     
+    # DigiKey pre-processing results
+    digikey_result: Optional[DigikeyResult] = None
+    
     # Performance metrics
     total_elapsed_time: float = 0.0
     serp_duration: float = 0.0
+    digikey_duration: float = 0.0
     scrape_metrics: List[ScrapeTimingMetrics] = field(default_factory=list)
     extraction_metrics: List[ExtractionTimingMetrics] = field(default_factory=list)
     
     # Cost tracking
     total_scrape_cost: float = 0.0
     total_extraction_cost: float = 0.0
+    digikey_cost: float = 0.0
     
     # Success metrics
     successful_scrapes: int = 0
@@ -171,27 +197,33 @@ class ImputemanResult:
     
     @property
     def total_cost(self) -> float:
-        return self.total_scrape_cost + self.total_extraction_cost
+        return self.total_scrape_cost + self.total_extraction_cost + self.digikey_cost
     
     @property
     def success_rate(self) -> float:
-        if not self.serp_urls:
+        total_sources = len(self.serp_urls) + (1 if self.digikey_result and self.digikey_result.success else 0)
+        if total_sources == 0:
             return 0.0
-        return self.successful_extractions / len(self.serp_urls)
+        return self.successful_extractions / total_sources
     
     @property
     def time_to_first_result(self) -> Optional[float]:
-        """Time to first successful extraction"""
-        if not self.extract_results:
+        """Time to first successful extraction (including DigiKey)"""
+        if not self.extract_results and not (self.digikey_result and self.digikey_result.success):
             return None
         
-        first_success_time = None
+        times = []
+        
+        # Include DigiKey time if successful
+        if self.digikey_result and self.digikey_result.success:
+            times.append(self.digikey_duration)
+        
+        # Include extraction times
         for result in self.extract_results.values():
             if result.success and result.elapsed_time:
-                if first_success_time is None or result.elapsed_time < first_success_time:
-                    first_success_time = result.elapsed_time
+                times.append(result.elapsed_time)
         
-        return first_success_time
+        return min(times) if times else None
     
     def get_performance_summary(self) -> Dict[str, Any]:
         """Get comprehensive performance analysis"""
@@ -199,6 +231,7 @@ class ImputemanResult:
             'execution': {
                 'total_time': self.total_elapsed_time,
                 'serp_time': self.serp_duration,
+                'digikey_time': self.digikey_duration,
                 'success_rate': self.success_rate,
                 'time_to_first_result': self.time_to_first_result
             },
@@ -206,13 +239,15 @@ class ImputemanResult:
                 'total_cost': self.total_cost,
                 'scrape_cost': self.total_scrape_cost,
                 'extraction_cost': self.total_extraction_cost,
-                'cost_per_result': self.total_cost / max(self.successful_extractions, 1)
+                'digikey_cost': self.digikey_cost,
+                'cost_per_result': self.total_cost / max(self.successful_extractions + (1 if self.digikey_result and self.digikey_result.success else 0), 1)
             },
             'throughput': {
                 'urls_found': len(self.serp_urls),
                 'successful_scrapes': self.successful_scrapes,
                 'successful_extractions': self.successful_extractions,
-                'scrape_success_rate': self.successful_scrapes / max(len(self.serp_urls), 1),
+                'digikey_success': self.digikey_result.success if self.digikey_result else False,
+                'scrape_success_rate': self.successful_scrapes / max(len(self.serp_urls), 1) if self.serp_urls else 0,
                 'extraction_success_rate': self.successful_extractions / max(self.successful_scrapes, 1) if self.successful_scrapes > 0 else 0
             }
         }
@@ -285,11 +320,97 @@ class ImputemanResult:
         return summary
 
 
+class EeImputeModule:
+    """
+    Embedded DigiKey scraping functionality for electronics components.
+    Based on the original EeImputeModule but simplified for integration.
+    """
+    
+    def __init__(self, bright_token: Optional[str] = None):
+        self.bright_token = bright_token
+        self._scrape_sem = asyncio.Semaphore(3)  # Limit concurrent DigiKey scrapes
+    
+    async def scrape_digikey_query_async(
+        self,
+        query: str,
+        *,
+        poll_interval: int = 8,
+        poll_timeout: int = 600,
+        fallback_to_browser_api: bool = False,
+    ) -> DigikeyResult:
+        """
+        Async function to scrape data from DigiKey for a specific query.
+        
+        Args:
+            query: The search query or part number to search for on DigiKey
+            poll_interval: Interval in seconds to poll for scrape results
+            poll_timeout: Timeout in seconds for the scrape operation
+            fallback_to_browser_api: Whether to fallback to browser API if initial scrape fails
+            
+        Returns:
+            DigikeyResult: The result of the DigiKey scrape operation
+        """
+        url = f'https://www.digikey.com/en/products/result?keywords={query}'
+        start_time = time.time()
+        
+        try:
+            if not DIGIKEY_AVAILABLE:
+                return DigikeyResult(
+                    success=False,
+                    query=query,
+                    url=url,
+                    error="DigiKey modules not available",
+                    elapsed_time=time.time() - start_time
+                )
+            
+            async with self._scrape_sem:
+                result = await scrape_url_async(
+                    url,
+                    bearer_token=self.bright_token,
+                    poll_interval=poll_interval,
+                    poll_timeout=poll_timeout,
+                    fallback_to_browser_api=fallback_to_browser_api,
+                )
+            
+            elapsed_time = time.time() - start_time
+            
+            if result and hasattr(result, 'data') and result.data:
+                hits = len(result.data) if isinstance(result.data, list) else 1
+                return DigikeyResult(
+                    success=True,
+                    query=query,
+                    data=result.data,
+                    url=url,
+                    elapsed_time=elapsed_time,
+                    hits=hits
+                )
+            else:
+                return DigikeyResult(
+                    success=False,
+                    query=query,
+                    url=url,
+                    elapsed_time=elapsed_time,
+                    error="No data returned from DigiKey"
+                )
+                
+        except Exception as e:
+            return DigikeyResult(
+                success=False,
+                query=query,
+                url=url,
+                elapsed_time=time.time() - start_time,
+                error=f"DigiKey scrape failed: {str(e)}"
+            )
+
+
 class Imputeman:
     """
     Main Imputeman orchestrator for AI-powered data imputation pipeline.
     
-    Provides streaming parallelization: extraction starts immediately when each scrape completes.
+    Provides streaming parallelization with optional DigiKey pre-processing:
+    1. Optional DigiKey direct scrape (for electronics components)
+    2. SERP → Scrape → Extract (streaming pipeline)
+    
     Includes comprehensive timing analysis and performance metrics.
     """
     
@@ -297,6 +418,12 @@ class Imputeman:
         self.config = config or get_development_config()
         self.registry = ServiceRegistry(self.config)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        
+        # Initialize DigiKey module if available
+        self.digikey_module = None
+        if DIGIKEY_AVAILABLE:
+            bright_token = getattr(self.config.scrape_config, 'bearer_token', None)
+            self.digikey_module = EeImputeModule(bright_token)
     
     async def run(
         self,
@@ -304,10 +431,12 @@ class Imputeman:
         schema: List[WhatToRetain],
         max_urls: int = None,
         enable_streaming: bool = True,
-        capture_detailed_metrics: bool = True
+        capture_detailed_metrics: bool = True,
+        enable_digikey_preprocessing: bool = False,
+        digikey_only: bool = False
     ) -> ImputemanResult:
         """
-        Execute complete Imputeman pipeline with streaming parallelization.
+        Execute complete Imputeman pipeline with optional DigiKey pre-processing.
         
         Args:
             entity: Entity to search and extract data for
@@ -315,6 +444,8 @@ class Imputeman:
             max_urls: Maximum URLs to process (uses config default if None)
             enable_streaming: If True, use streaming extraction (recommended)
             capture_detailed_metrics: If True, capture comprehensive timing data
+            enable_digikey_preprocessing: If True, try DigiKey direct scrape first
+            digikey_only: If True, only run DigiKey scrape (skip SERP pipeline)
             
         Returns:
             ImputemanResult with extracted data, metrics, and performance analysis
@@ -331,31 +462,60 @@ class Imputeman:
         self.logger.info(f"🚀 Starting Imputeman pipeline for: {entity.name}")
         
         try:
-            # Phase 1: SERP - Find URLs
-            serp_start = time.time()
-            self.logger.info("🔍 Executing SERP phase...")
+            # Phase 0: Optional DigiKey Pre-processing
+            if enable_digikey_preprocessing or digikey_only:
+                await self._execute_digikey_preprocessing(result)
             
-            serp_result = await self.registry.serp.search(entity.name, top_k=max_urls)
-            
-            result.serp_duration = time.time() - serp_start
-            
-            if not serp_result.success or not serp_result.links:
-                result.errors.append(f"SERP failed: {serp_result.metadata}")
-                self.logger.error(f"SERP phase failed: {serp_result.metadata}")
+            # Early exit if DigiKey-only mode
+            if digikey_only:
+                result.total_elapsed_time = time.time() - start_time
+                result.success = result.digikey_result and result.digikey_result.success
+                self._log_execution_summary(result)
                 return result
             
-            result.serp_urls = serp_result.links[:max_urls]
-            self.logger.info(f"✅ Found {len(result.serp_urls)} URLs in {result.serp_duration:.2f}s")
+            # Phase 1: SERP - Find URLs (skip if DigiKey succeeded and we have enough data)
+            skip_serp = (enable_digikey_preprocessing and 
+                        result.digikey_result and 
+                        result.digikey_result.success and 
+                        result.digikey_result.hits > 0)
             
-            # Phase 2: Streaming Scrape + Extract
-            if enable_streaming:
-                await self._execute_streaming_pipeline(result, capture_detailed_metrics)
+            if not skip_serp:
+                serp_start = time.time()
+                self.logger.info("🔍 Executing SERP phase...")
+                
+                serp_result = await self.registry.serp.search(entity.name, top_k=max_urls)
+                
+                result.serp_duration = time.time() - serp_start
+                
+                if not serp_result.success or not serp_result.links:
+                    result.errors.append(f"SERP failed: {serp_result.metadata}")
+                    self.logger.error(f"SERP phase failed: {serp_result.metadata}")
+                    
+                    # If DigiKey succeeded, still consider this a success
+                    if result.digikey_result and result.digikey_result.success:
+                        result.success = True
+                        result.total_elapsed_time = time.time() - start_time
+                        self._log_execution_summary(result)
+                        return result
+                    else:
+                        result.total_elapsed_time = time.time() - start_time
+                        return result
+                
+                result.serp_urls = serp_result.links[:max_urls]
+                self.logger.info(f"✅ Found {len(result.serp_urls)} URLs in {result.serp_duration:.2f}s")
+                
+                # Phase 2: Streaming Scrape + Extract
+                if enable_streaming:
+                    await self._execute_streaming_pipeline(result, capture_detailed_metrics)
+                else:
+                    await self._execute_batch_pipeline(result, capture_detailed_metrics)
             else:
-                await self._execute_batch_pipeline(result, capture_detailed_metrics)
+                self.logger.info("⚡ Skipping SERP phase - DigiKey preprocessing provided sufficient data")
             
             # Phase 3: Finalize results
             result.total_elapsed_time = time.time() - start_time
-            result.success = result.successful_extractions > 0
+            result.success = (result.successful_extractions > 0 or 
+                            (result.digikey_result and result.digikey_result.success))
             
             # Log summary
             self._log_execution_summary(result)
@@ -370,6 +530,33 @@ class Imputeman:
         
         finally:
             await self.registry.close_all()
+    
+    async def _execute_digikey_preprocessing(self, result: ImputemanResult):
+        """Execute DigiKey pre-processing phase"""
+        
+        if not self.digikey_module:
+            result.errors.append("DigiKey module not available")
+            self.logger.warning("⚠️ DigiKey preprocessing requested but module not available")
+            return
+        
+        self.logger.info("🔧 Executing DigiKey pre-processing...")
+        digikey_start = time.time()
+        
+        digikey_result = await self.digikey_module.scrape_digikey_query_async(
+            query=result.entity.name,
+            poll_interval=8,
+            poll_timeout=300,
+            fallback_to_browser_api=True
+        )
+        
+        result.digikey_duration = time.time() - digikey_start
+        result.digikey_result = digikey_result
+        
+        if digikey_result.success:
+            self.logger.info(f"✅ DigiKey preprocessing successful: {digikey_result.hits} hits in {digikey_result.elapsed_time:.2f}s")
+            # TODO: Add DigiKey cost tracking if available
+        else:
+            self.logger.warning(f"⚠️ DigiKey preprocessing failed: {digikey_result.error}")
     
     async def _execute_streaming_pipeline(self, result: ImputemanResult, capture_metrics: bool):
         """Execute streaming pipeline: extract immediately as each scrape completes"""
@@ -523,7 +710,15 @@ class Imputeman:
         self.logger.info(f"   📊 Success Rate: {result.success_rate:.1%}")
         self.logger.info(f"   ⏱️ Total Duration: {result.total_elapsed_time:.2f}s")
         self.logger.info(f"   💰 Total Cost: ${result.total_cost:.4f}")
-        self.logger.info(f"   🔗 URLs: {len(result.serp_urls)} found → {result.successful_scrapes} scraped → {result.successful_extractions} extracted")
+        
+        # DigiKey results
+        if result.digikey_result:
+            dk_status = "✅ Success" if result.digikey_result.success else "❌ Failed"
+            self.logger.info(f"   🔧 DigiKey: {dk_status} ({result.digikey_result.hits} hits in {result.digikey_duration:.2f}s)")
+        
+        # SERP pipeline results
+        if result.serp_urls:
+            self.logger.info(f"   🔗 SERP Pipeline: {len(result.serp_urls)} found → {result.successful_scrapes} scraped → {result.successful_extractions} extracted")
         
         if result.time_to_first_result:
             self.logger.info(f"   ⚡ Time to First Result: {result.time_to_first_result:.2f}s")
@@ -566,6 +761,31 @@ async def run_imputeman(
     return await imputeman.run(entity, schema, **kwargs)
 
 
+async def run_imputeman_digikey_only(
+    entity: Union[str, EntityToImpute],
+    schema: List[WhatToRetain],
+    config: Optional[PipelineConfig] = None
+) -> ImputemanResult:
+    """
+    Convenience function to run DigiKey-only pipeline
+    
+    Args:
+        entity: Entity name (str) or EntityToImpute object
+        schema: List of WhatToRetain specifications
+        config: Pipeline configuration
+    
+    Returns:
+        ImputemanResult with DigiKey data only
+    """
+    return await run_imputeman(
+        entity,
+        schema,
+        config,
+        enable_digikey_preprocessing=True,
+        digikey_only=True
+    )
+
+
 def run_imputeman_sync(
     entity: Union[str, EntityToImpute],
     schema: List[WhatToRetain],
@@ -589,7 +809,7 @@ def run_imputeman_sync(
 
 # Example usage
 async def main():
-    """Example usage of Imputeman"""
+    """Example usage of Imputeman with DigiKey preprocessing"""
     
     # Define what to extract
     schema = [
@@ -598,52 +818,46 @@ async def main():
         WhatToRetain(name="package_type", desc="Physical package type")
     ]
     
-    # Run pipeline
-    result = await run_imputeman(
+    # Example 1: Full pipeline with DigiKey preprocessing
+    result1 = await run_imputeman(
         entity="BAV99",
         schema=schema,
         max_urls=5,
         enable_streaming=True,
+        enable_digikey_preprocessing=True,  # Try DigiKey first
         capture_detailed_metrics=True
     )
     
-    # Analyze results
-    print(f"Success: {result.success}")
-    print(f"Extracted data: {len(result.extract_results)} items")
-    print(f"Total cost: ${result.total_cost:.4f}")
-    print(f"Success rate: {result.success_rate:.1%}")
+    print("=== Full Pipeline with DigiKey ===")
+    print(f"Success: {result1.success}")
+    print(f"DigiKey success: {result1.digikey_result.success if result1.digikey_result else False}")
+    print(f"SERP extractions: {len(result1.extract_results)}")
+    print(f"Total cost: ${result1.total_cost:.4f}")
     
-    # Get performance insights
-    perf = result.get_performance_summary()
-    print(f"Performance summary: {perf}")
+    # Example 2: DigiKey-only pipeline
+    result2 = await run_imputeman_digikey_only(
+        entity="NTJD5121NT1G",
+        schema=schema
+    )
+    
+    print("\n=== DigiKey Only ===")
+    print(f"Success: {result2.success}")
+    print(f"DigiKey hits: {result2.digikey_result.hits if result2.digikey_result else 0}")
+    print(f"Duration: {result2.total_elapsed_time:.2f}s")
+    
+    # Example 3: Traditional SERP pipeline (no DigiKey)
+    result3 = await run_imputeman(
+        entity="LM358",
+        schema=schema,
+        enable_digikey_preprocessing=False,  # Skip DigiKey
+        enable_streaming=True
+    )
+    
+    print("\n=== Traditional SERP Pipeline ===")
+    print(f"Success: {result3.success}")
+    print(f"URLs found: {len(result3.serp_urls)}")
+    print(f"Successful extractions: {result3.successful_extractions}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
-# elapsed_time: 
-# serp_time:
-
-
-# time_to_first_result:
-# usage
-# cost
-#     total_cost
-#     scrape_cost
-#     extraction_cost
-#     cost_per_result
-
-# success_rate
-
-# 'throughput': {'urls_found': 4,
-#                'successful_scrapes': 4, 
-#                'successful_extractions': 4, 
-#                'scrape_success_rate': 1.0, 
-#                'extraction_success_rate': 1.0}, 
-#                'scrape_performance': {'avg_scrape_time': 10.702618000000001, 'min_scrape_time': 8.45635, 'max_scrape_time': 13.039405, 'std_scrape_time': 1.8986080203361266}, 
-#                 'polling_analysis': {'avg_polls': 2, 'max_polls': 2, 'min_polls': 2},
-#                'extraction_performance': {'filter': {'avg_time': 5.07364075, 'max_time': 8.356368}, 'parse': {'avg_time': 4.37293125, 'max_time': 10.495293}}}
-
