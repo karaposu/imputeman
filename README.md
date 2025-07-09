@@ -7,7 +7,7 @@ imputeman is build upon 5 modules
 SerpEngine for link collection
 Brightdata for scraping
 Extracthero for information extraction
-Prefect for pipeline orchestration. 
+
 
 
 ## Features
@@ -18,7 +18,7 @@ Prefect for pipeline orchestration.
 - 🌊 **Conditional Workflows**: Dynamic pipeline routing based on cost, quality, and success metrics
 - 💰 **Cost-Aware**: Budget-conscious scraping modes and cost monitoring
 - 🔄 **Retry Logic**: Configurable retry strategies for each pipeline stage
-- 📊 **Rich Observability**: Detailed logging, metrics, and Prefect UI integration
+- 📊 **Rich Observability**: Detailed logging, metrics,
 
 ## Quick Start
 
@@ -31,8 +31,6 @@ pip install -e .
 # Install with development dependencies
 pip install -e ".[dev]"
 
-# Start Prefect server (optional, for UI)
-prefect server start
 ```
 
 ### Basic Usage

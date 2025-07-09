@@ -2,36 +2,7 @@
 """
 to run:  python -m imputeman.imputeman
 """
-# imputeman.py
-"""
-Imputeman - AI-powered context-aware data imputation pipeline
-Main orchestrator class for streaming SERP → Scrape → Extract operations
 
-Fixed to properly use ImputeOp from models.py for comprehensive tracking
-Enhanced with improved, clean logging
-
-## Recommended Usage Pattern (for better visibility):
-
-```python
-from imputeman import Imputeman
-from imputeman.core.config import get_development_config
-from imputeman.core.entities import EntityToImpute, WhatToRetain
-
-# Create entity and schema
-entity = EntityToImpute(name="BAV99")  # or just use string: "BAV99"
-schema = [WhatToRetain(name="component_type", desc="Type of electronic component")]
-
-# Explicit instantiation - better visibility!
-config = get_development_config() 
-imputeman = Imputeman(config)
-impute_op = await imputeman.run(entity, schema, max_urls=5)
-
-# Access comprehensive results
-print(f"Success: {impute_op.success}")
-print(f"Live summary: {impute_op.get_live_summary()}")
-print(f"Cost breakdown: {impute_op.costs}")
-```
-"""
 
 import asyncio
 import time
@@ -183,7 +154,7 @@ class Imputeman:
                 url = scrape_tasks[completed_task]
                 
                 try:
-                    scrape_result, _ = await completed_task
+                    scrape_result, _ = await completed_task  # Simplified - no detailed metrics for now
                     
                     # Track scrape completion
                     scrape_success = scrape_result and any(r.status == "ready" for r in scrape_result.values())
@@ -193,21 +164,15 @@ class Imputeman:
                         # Store scrape result
                         impute_op.scrape_results.update(scrape_result)
                         
-                        # Get scrape details for enhanced logging
-                        scrape_cost = 0
-                        html_size = 0
+                        # Track scrape cost
                         for scrape_res in scrape_result.values():
-                            scrape_cost += getattr(scrape_res, 'cost', 0) or 0
-                            if hasattr(scrape_res, 'data') and scrape_res.data:
-                                html_size = len(scrape_res.data)
-                            impute_op.costs.scrape_cost += getattr(scrape_res, 'cost', 0) or 0
+                            scrape_cost = getattr(scrape_res, 'cost', 0) or 0
+                            impute_op.costs.scrape_cost += scrape_cost
                         
-                        # Enhanced scrape completion log
-                        self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
+                        self.logger.info(f"✅ Scrape completed for {url[:40]}... - Starting extraction IMMEDIATELY")
                         
-                        # Mark extraction starting with phase info
+                        # Mark extraction starting
                         impute_op.mark_url_extracting(url)
-                        self.logger.info(f"🧠 Started extracting[Filtering] from {url[:40]}...")
                         
                         # Immediately start extraction
                         extract_result, _ = await self._extract_with_metrics(
@@ -222,18 +187,13 @@ class Imputeman:
                             impute_op.extract_results.update(extract_result)
                             
                             # Track extraction cost
-                            extract_cost = 0
                             for extract_op in extract_result.values():
                                 if extract_op.usage and 'total_cost' in extract_op.usage:
-                                    cost = extract_op.usage['total_cost']
-                                    impute_op.costs.extraction_cost += cost
-                                    extract_cost += cost
+                                    impute_op.costs.extraction_cost += extract_op.usage['total_cost']
                                 elif extract_op.usage and 'cost' in extract_op.usage:
-                                    cost = extract_op.usage['cost']
-                                    impute_op.costs.extraction_cost += cost
-                                    extract_cost += cost
+                                    impute_op.costs.extraction_cost += extract_op.usage['cost']
                             
-                            self.logger.info(f"✅ Extracted from {url[:40]}... (${extract_cost:.4f})")
+                            self.logger.info(f"✅ Extraction completed for {url[:40]}...")
                             
                             # Store first successful content if available
                             if not impute_op.content and extract_success:
@@ -272,10 +232,6 @@ class Imputeman:
             if scrape_success:
                 scrape_cost = getattr(scrape_result, 'cost', 0) or 0
                 impute_op.costs.scrape_cost += scrape_cost
-                
-                # Enhanced batch scrape logging
-                html_size = len(scrape_result.data) if hasattr(scrape_result, 'data') and scrape_result.data else 0
-                self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
         
         # Phase 2: Extract from all successful scrapes
         successful_scrapes = {
@@ -287,7 +243,6 @@ class Imputeman:
             # Mark extractions starting
             for url in successful_scrapes.keys():
                 impute_op.mark_url_extracting(url)
-                self.logger.info(f"🧠 Started extracting[Filtering] from {url[:40]}...")
             
             extract_results = await self.registry.extractor.extract_from_scrapes(successful_scrapes, impute_op.schema)
             impute_op.extract_results = extract_results
@@ -298,21 +253,14 @@ class Imputeman:
                 impute_op.mark_url_extracted(url, extract_success)
                 
                 if extract_success:
-                    extract_cost = 0
                     if extract_result.usage and 'total_cost' in extract_result.usage:
-                        extract_cost = extract_result.usage['total_cost']
-                        impute_op.costs.extraction_cost += extract_cost
+                        impute_op.costs.extraction_cost += extract_result.usage['total_cost']
                     elif extract_result.usage and 'cost' in extract_result.usage:
-                        extract_cost = extract_result.usage['cost']
-                        impute_op.costs.extraction_cost += extract_cost
-                    
-                    self.logger.info(f"✅ Extracted from {url[:40]}... (${extract_cost:.4f})")
+                        impute_op.costs.extraction_cost += extract_result.usage['cost']
                     
                     # Store first successful content
                     if not impute_op.content and extract_result.content:
                         impute_op.content = extract_result.content
-                else:
-                    self.logger.warning(f"⚠️ Extraction failed for {url[:40]}...")
     
     async def _scrape_with_metrics(self, url: str, capture_metrics: bool):
         """
@@ -376,8 +324,8 @@ async def main():
     # Define what to extract
     schema = [
         WhatToRetain(name="component_type", desc="Type of electronic component"),
-        WhatToRetain(name="voltage_rating", desc="Maximum voltage rating"),
-        WhatToRetain(name="package_type", desc="Physical package type")
+        # WhatToRetain(name="voltage_rating", desc="Maximum voltage rating"),
+        # WhatToRetain(name="package_type", desc="Physical package type")
     ]
     
     # Create entity (can also just use string "BAV99")

@@ -1,12 +1,14 @@
 # imputeman/services/extractor_service.py
-"""Simplified extractor service that directly uses ExtractHero"""
+"""Simplified extractor service that directly uses ExtractHero - WITH DEBUG LOGGING"""
+
+import logging
+logger = logging.getLogger(__name__)
 
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Union, Any
 from ..core.config import ExtractConfig
 from ..core.entities import WhatToRetain
 from brightdata.models import ScrapeResult
-import time
 
 # Import ExtractHero
 try:
@@ -29,16 +31,18 @@ class ExtractorService:
         if EXTRACTHERO_AVAILABLE:
             extracthero_config = ExtractHeroConfig()
             self.extract_hero = ExtractHero(config=extracthero_config)
+            print(f"✅ ExtractHero initialized successfully")
         else:
             self.extract_hero = None
-    
+            print(f"❌ ExtractHero not available!")
+
     async def extract_from_scrapes(
         self, 
         scrape_results: Dict[str, ScrapeResult], 
         schema: List[WhatToRetain]
     ) -> Dict[str, ExtractOp]:
         """
-        Extract data from scrape results using ExtractHero
+        Extract data from scrape results using ExtractHero with URL context logging
         
         Args:
             scrape_results: Dictionary of URL -> ScrapeResult
@@ -47,8 +51,12 @@ class ExtractorService:
         Returns:
             Dictionary of URL -> ExtractOp (from extracthero)
         """
+        print(f"🔍 DEBUG: Starting extraction from {len(scrape_results)} scrape results")
+        
         if not self.extract_hero:
-            raise Exception("ExtractHero not available")
+            error_msg = "ExtractHero not available"
+            print(f"❌ DEBUG: {error_msg}")
+            raise Exception(error_msg)
         
         # Filter successful scrapes
         valid_scrapes = {
@@ -56,49 +64,110 @@ class ExtractorService:
             if result.status == "ready" and result.data
         }
         
+        print(f"🔍 DEBUG: Found {len(valid_scrapes)} valid scrapes out of {len(scrape_results)} total")
+        
         if not valid_scrapes:
+            print(f"❌ DEBUG: No valid scrapes found!")
+            for url, result in scrape_results.items():
+                print(f"   - {url}: status={result.status}, has_data={bool(result.data)}")
             return {}
         
         # Convert schema to extracthero format
         extracthero_schema = self._convert_schema(schema)
+        print(f"🔍 DEBUG: Converted schema to {len(extracthero_schema)} ExtractHero fields")
         
-        # Extract from each valid scrape
-        extract_tasks = [
-            self._extract_single(url, scrape_result.data, extracthero_schema)
-            for url, scrape_result in valid_scrapes.items()
-        ]
+        # Extract from each valid scrape with URL context
+        extract_tasks = []
+        for url, scrape_result in valid_scrapes.items():
+            print(f"🔍 DEBUG: Creating extraction task for {url[:50]}...")
+            task = self._extract_single_with_url_context(url, scrape_result.data, extracthero_schema)
+            extract_tasks.append((url, task))
         
-        results = await asyncio.gather(*extract_tasks, return_exceptions=True)
+        # Execute extractions
+        print(f"🔍 DEBUG: Executing {len(extract_tasks)} extraction tasks...")
+        results = await asyncio.gather(*[task for _, task in extract_tasks], return_exceptions=True)
         
         # Build results dictionary
         extract_results = {}
-        for (url, _), result in zip(valid_scrapes.items(), results):
+        for (url, _), result in zip(extract_tasks, results):
             if isinstance(result, Exception):
-                # Create a failed ExtractOp
+                print(f"❌ DEBUG: Extraction failed for {url}: {result}")
                 extract_results[url] = self._create_failed_extract_op(str(result))
             else:
+                print(f"✅ DEBUG: Extraction succeeded for {url}: success={result.success}")
                 extract_results[url] = result
         
+        print(f"🔍 DEBUG: Returning {len(extract_results)} extraction results")
         return extract_results
-    
-    async def _extract_single(self, url: str, html_data: str, schema: List[ExtractHeroWhatToRetain]) -> ExtractOp:
-        """Extract from a single HTML document"""
-        return await self.extract_hero.extract_async(
-            text=html_data,
-            extraction_spec=schema,
-            text_type="html"
-        )
+
+    async def _extract_single_with_url_context(self, url: str, html_data: str, schema: List[ExtractHeroWhatToRetain]) -> ExtractOp:
+        """Extract from a single HTML document with URL context in logs"""
+        
+        print(f"🔍 DEBUG: Starting single extraction for {url[:50]}...")
+        print(f"🔍 DEBUG: HTML data length: {len(html_data)} chars")
+        print(f"🔍 DEBUG: Schema length: {len(schema)} fields")
+        
+        # Monkey patch the extract_hero methods to add URL context
+        original_filter_async = self.extract_hero.filter_async
+        original_parse_async = self.extract_hero.parse_async
+        
+        async def filter_with_context(*args, **kwargs):
+            print(f"🧠 Started extracting[Filtering] from {url[:40]}...")
+            try:
+                result = await original_filter_async(*args, **kwargs)
+                if result.success:
+                    print(f"✅ Filter completed for {url[:40]}...")
+                else:
+                    print(f"❌ DEBUG: Filter failed for {url}: {result.error if hasattr(result, 'error') else 'Unknown error'}")
+                return result
+            except Exception as e:
+                print(f"❌ DEBUG: Filter exception for {url}: {e}")
+                raise
+        
+        async def parse_with_context(*args, **kwargs):
+            print(f"🧠 Started extracting[Parsing] from {url[:40]}...")
+            try:
+                result = await original_parse_async(*args, **kwargs)
+                if result.success:
+                    print(f"✅ Parse completed for {url[:40]}...")
+                else:
+                    print(f"❌ DEBUG: Parse failed for {url}: {result.error if hasattr(result, 'error') else 'Unknown error'}")
+                return result
+            except Exception as e:
+                print(f"❌ DEBUG: Parse exception for {url}: {e}")
+                raise
+        
+        # Temporarily replace methods
+        self.extract_hero.filter_async = filter_with_context
+        self.extract_hero.parse_async = parse_with_context
+        
+        try:
+            print(f"🔍 DEBUG: Calling extract_hero.extract_async for {url[:50]}...")
+            result = await self.extract_hero.extract_async(
+                text=html_data,
+                extraction_spec=schema,
+                text_type="html"
+            )
+            print(f"🔍 DEBUG: extract_async completed for {url[:50]}: success={result.success}")
+            return result
+        except Exception as e:
+            print(f"❌ DEBUG: extract_async exception for {url}: {e}")
+            raise
+        finally:
+            # Restore original methods
+            self.extract_hero.filter_async = original_filter_async
+            self.extract_hero.parse_async = original_parse_async
     
     def _convert_schema(self, schema: List[WhatToRetain]) -> List[ExtractHeroWhatToRetain]:
         """Convert WhatToRetain to ExtractHero format"""
-        return [
-            ExtractHeroWhatToRetain(
+        converted = []
+        for item in schema:
+            converted.append(ExtractHeroWhatToRetain(
                 name=item.name,
                 desc=item.desc,
-                example=item.example
-            )
-            for item in schema
-        ]
+                example=getattr(item, 'example', None)
+            ))
+        return converted
     
     def _create_failed_extract_op(self, error_msg: str) -> ExtractOp:
         """Create a failed ExtractOp for error cases"""
@@ -133,152 +202,60 @@ class ExtractorService:
             content=None
         )
     
+    # ... (other methods remain the same)
+    
+    async def extract_from_scrapes_streaming(
+        self, 
+        scrape_tasks: Dict[asyncio.Task, str],  # Task -> URL mapping
+        schema: List[WhatToRetain]
+    ) -> Dict[str, ExtractOp]:
+        """
+        Stream extraction: extract as soon as each scrape completes
+        
+        Args:
+            scrape_tasks: Dict mapping asyncio.Task -> URL
+            schema: Extraction schema
+            
+        Returns:
+            Dict mapping URL -> ExtractOp (results arrive incrementally)
+        """
+        extract_results = {}
+        
+        # Process scrapes as they complete (streaming!)
+        for completed_scrape_task in asyncio.as_completed(scrape_tasks.keys()):
+            try:
+                url = scrape_tasks[completed_scrape_task]
+                scrape_result = await completed_scrape_task
+                
+                # Immediately extract from this completed scrape
+                if self._is_scrape_successful(scrape_result):
+                    extract_result = await self.extract_from_single_scrape(scrape_result, schema)
+                    extract_results.update(extract_result)
+                else:
+                    logger.debug(f"Scrape failed for {url}, skipping extraction")
+                    
+            except Exception as e:
+                url = scrape_tasks.get(completed_scrape_task, "unknown")
+                logger.debug(f"Streaming extraction failed for {url}: {e}")
+        
+        return extract_results
+    
+    async def extract_from_single_scrape(self, scrape_result, schema):
+        """Extract from a single completed scrape result"""
+        return await self.extract_from_scrapes(scrape_result, schema)
+    
+    def _is_scrape_successful(self, scrape_result):
+        """Check if scrape result is valid for extraction"""
+        return any(r.status == "ready" and r.data for r in scrape_result.values())
+    
+    def get_usage_stats(self) -> Dict[str, Any]:
+        """Get basic service info (no tracking)"""
+        return {
+            "service_type": "ExtractorService",
+            "extracthero_available": self.extract_hero is not None,
+            "config": str(self.config)
+        }
     
     async def close(self):
         """Clean up resources"""
         pass
-
-
-
-
-    async def extract_from_html(
-        self, 
-        html_content: str, 
-        extraction_schema: List[WhatToRetain],
-        reduce_html: bool = True
-    ) -> ExtractOp:
-        """
-        Extract structured data from HTML content
-        
-        Args:
-            html_content: Raw HTML content
-            extraction_schema: List of WhatToRetain objects defining extraction schema
-            reduce_html: Whether to reduce HTML size before extraction
-            
-        Returns:
-            ExtractOp with extracted data
-        """
-        start_time = time.time()
-        
-        
-        try:
-            if not self.extract_hero:
-                raise Exception("ExtractHero not available")
-            
-            # Convert WhatToRetain to ExtractHero format
-          
-            
-            # Use ExtractHero for extraction
-            extract_op = await self.extract_hero.extract_async(
-                text=html_content,
-                extraction_spec=extraction_schema,
-                text_type="html",
-                reduce_html=reduce_html
-            )
-            
-            
-            return extract_op
-            
-        except Exception as e:
-            # Return a failed ExtractOp
-            from extracthero.schemes import FilterOp, ParseOp
-            
-          
-            
-            # Create failed filter and parse ops
-            failed_filter_op = FilterOp(
-                success=False,
-                content=None,
-                usage=None,
-                config=self.extract_hero.config if self.extract_hero else None,
-                reduced_html=None,
-                error=f"HTML extraction failed: {str(e)}"
-            )
-            
-            failed_parse_op = ParseOp(
-                success=False,
-                content=None,
-                usage=None,
-                elapsed_time=0.0,
-                config=self.extract_hero.config if self.extract_hero else None,
-                error="Parse phase not reached"
-            )
-            
-            return ExtractOp(
-                filter_op=failed_filter_op,
-                parse_op=failed_parse_op,
-                content=None
-            )
-    
-    async def extract_from_json(
-        self, 
-        json_data: Union[Dict[str, Any], str], 
-        extraction_schema: List[WhatToRetain]
-    ) -> ExtractOp:
-        """
-        Extract structured data from JSON data
-        
-        Args:
-            json_data: JSON data (dict or string)
-            extraction_schema: List of WhatToRetain objects defining extraction schema
-            
-        Returns:
-            ExtractOp with extracted data
-        """
-       
-        
-        try:
-            if not self.extract_hero:
-                raise Exception("ExtractHero not available")
-            
-            # Convert WhatToRetain to ExtractHero format
-           
-            # Determine input type
-            if isinstance(json_data, str):
-                text_type = "json"
-                input_data = json_data
-            else:
-                text_type = "dict"
-                input_data = json_data
-            
-            # Use ExtractHero for extraction
-            extract_op = await self.extract_hero.extract_async(
-                text=input_data,
-                extraction_spec=extraction_schema,
-                text_type=text_type
-            )
-            
-            
-            
-          
-            return extract_op
-            
-        except Exception as e:
-            # Return a failed ExtractOp
-            from extracthero.schemes import FilterOp, ParseOp
-            
-            
-            # Create failed filter and parse ops
-            failed_filter_op = FilterOp(
-                success=False,
-                content=None,
-                usage=None,
-                config=self.extract_hero.config if self.extract_hero else None,
-                reduced_html=None,
-                error=f"JSON extraction failed: {str(e)}"
-            )
-            
-            failed_parse_op = ParseOp(
-                success=False,
-                content=None,
-                usage=None,
-              
-                config=self.extract_hero.config if self.extract_hero else None,
-                error="Parse phase not reached"
-            )
-            
-            return ExtractOp(
-                filter_op=failed_filter_op,
-                parse_op=failed_parse_op,
-                content=None
-            )

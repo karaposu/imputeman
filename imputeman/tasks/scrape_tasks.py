@@ -133,6 +133,3 @@ async def analyze_scrape_costs_task(
     return analysis
 
 
-# All scraping logic is now handled by the ScraperService
-# The _scrape_single_url and related helper functions 
-# have been moved to the service layer for better separation of concerns
