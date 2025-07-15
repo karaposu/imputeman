@@ -2,11 +2,12 @@
 
 AI powered context aware data imputation pipeline
 
-imputeman is build upon 5 modules
+imputeman is build upon 4 modules
 
 SerpEngine for link collection
 Brightdata for scraping
 Extracthero for information extraction
+LLMservice for handling llm interactions
 
 
 

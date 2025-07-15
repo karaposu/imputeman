@@ -2,169 +2,128 @@
 """SERP (Search Engine Results Page) service for web search operations"""
 
 import asyncio
-import time
 from typing import List, Dict, Any, Optional
+import logging
 
+from serpengine.serpengine import SERPEngine
+from serpengine.schemes import SerpEngineOp, SearchHit, UsageInfo, SerpChannelOp
 from ..core.config import SerpConfig
-from ..core.entities import SerpResult
 
-# Import the actual SERPEngine
-try:
-    from serpengine.serpengine import SERPEngine
-    SERPENGINE_AVAILABLE = True
-except ImportError:
-    SERPENGINE_AVAILABLE = False
+logger = logging.getLogger(__name__)
 
 
 class SerpService:
     """
     Service for handling search engine API calls using SERPEngine
     
-    This service uses the production SERPEngine library for Google Custom Search
-    and provides a consistent interface for search operations.
+    This service uses the production SERPEngine library which supports
+    multiple search channels (Google API, SerpAPI, DataForSEO, etc.)
     """
     
     def __init__(self, config: SerpConfig):
         self.config = config
         
-        if SERPENGINE_AVAILABLE:
-            self.engine = SERPEngine()
+        # Initialize SERPEngine with specific channels
+        # Always try google_api and serpapi
+        channels_to_try = ["google_api", "serpapi"]
+        self.engine = SERPEngine(channels=channels_to_try)
+        
+        # Log available channels
+        if self.engine.available_channels:
+            logger.info(f"SERPEngine initialized with channels: {self.engine.available_channels}")
         else:
-            self.engine = None
-            print("⚠️  SERPEngine not available, falling back to mock search")
+            logger.warning("No search channels could be initialized")
+            logger.warning("Please set API credentials for at least one channel:")
+            logger.warning("  - Google API: GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID")
+            logger.warning("  - SerpAPI: SERPAPI_API_KEY")
+            raise ValueError(
+                "No search channels available. Please check your API credentials. "
+                "Set GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID for google_api, "
+                "or SERPAPI_API_KEY for serpapi."
+            )
     
-    async def search(self, query: str, top_k: int = None) -> SerpResult:
+    async def search(self, query: str, top_k: int = None) -> SerpEngineOp:
         """
         Execute search query using SERPEngine and return results
         
         Args:
             query: Search query string
-            top_k: Number of results to return (overrides config)
+            top_k: Number of results to return per channel (overrides config)
             
         Returns:
-            SerpResult with search results and metadata
+            SerpEngineOp with search results and metadata
         """
-        start_time = time.time()
         top_k = top_k or self.config.top_k_results
         
         try:
-            if SERPENGINE_AVAILABLE and self.engine:
-                # Use the official SERPEngine
-                links = await self._search_with_serpengine(query, top_k)
-                search_engine = "google_custom_search"
-            else:
-                # Fallback to mock search for development
-                links = await self._mock_search(query, top_k)
-                search_engine = "mock"
+            # Use async search for better performance
+            serp_result = await self._search_with_serpengine_async(query, top_k)
             
-            elapsed_time = time.time() - start_time
+            # Log summary
+            logger.info(f"✅ SERP search completed: {len(serp_result.results)} total results from {len(serp_result.channels)} channels")
             
-            return SerpResult(
-                query=query,
-                links=links,
-                total_results=len(links),
-                search_engine=search_engine,
-                elapsed_time=elapsed_time,
-                success=len(links) > 0,
-                metadata={
-                    "top_k_requested": top_k,
-                    "api_calls": 1,
-                    "serpengine_used": SERPENGINE_AVAILABLE
-                }
-            )
+            # Log per-channel results
+            for channel in serp_result.channels:
+                logger.debug(f"   📡 {channel.name}: {len(channel.results)} results, ${channel.usage.cost:.4f}")
+            
+            # Log individual links
+            for i, hit in enumerate(serp_result.results, 1):
+                logger.debug(f"   🔗 Link {i}: {hit.link} (from {hit.channel_name}, rank #{hit.channel_rank})")
+            
+            return serp_result
             
         except Exception as e:
-            elapsed_time = time.time() - start_time
-            return SerpResult(
-                query=query,
-                links=[],
-                total_results=0,
-                search_engine="error",
-                elapsed_time=elapsed_time,
-                success=False,
-                metadata={"error": str(e), "error_type": type(e).__name__}
-            )
+            logger.error(f"SERP search failed: {e}", exc_info=True)
+            # Re-raise the exception - let the caller handle it
+            raise
     
-    async def _search_with_serpengine(self, query: str, top_k: int) -> List[str]:
+    async def _search_with_serpengine_async(self, query: str, top_k: int) -> SerpEngineOp:
         """
-        Search using the official SERPEngine library
+        Search using the SERPEngine library with async support
         
         Args:
             query: Search query string
-            top_k: Number of results to return
+            top_k: Number of results to return per channel
             
         Returns:
-            List of URLs from search results
+            SerpEngineOp with full search results
         """
-        # Use SERPEngine's async collect method
-        serpengine_op = await self.engine.collect_async(
+        # Use all available channels (google_api and/or serpapi)
+        # SERPEngine will only use the ones with valid credentials
+        serp_result = await self.engine.collect_async(
             query=query,
-            num_urls=top_k,
-            search_sources=["google_search_via_api"],  # Use Google Custom Search API
-            output_format="object"  # Get structured objects
+            num_of_links_per_channel=top_k,
+            search_sources=None,  # None means use all available channels
+            output_format="object",  # Get SerpEngineOp object
+            regex_based_link_validation=True,
+            allow_links_forwarding_to_files=False  # Filter out PDFs, etc.
         )
         
-        # Extract URLs from SERPEngine results
-        links = serpengine_op.all_links()
-        
-        # Log some metadata for debugging
-        print(f"   🔍 SERPEngine search completed in {serpengine_op.elapsed_time:.2f}s")
-        print(f"   💰 Search cost: ${serpengine_op.usage.cost:.4f}")
-        
-        return links[:top_k]
+        return serp_result
     
-    async def _mock_search(self, query: str, top_k: int) -> List[str]:
+    def extract_urls_from_result(self, serp_result: SerpEngineOp) -> List[str]:
         """
-        Mock search for development and testing when SERPEngine is not available
-        
-        This generates fake URLs for testing without hitting real APIs
-        """
-        await asyncio.sleep(0.2)  # Simulate API delay
-        
-        # Generate mock URLs based on query - specifically for electronic components
-        query_slug = query.lower().replace(" ", "-")
-        
-        if any(term in query.lower() for term in ['bav99', 'transistor', 'diode', 'resistor', 'component']):
-            # Electronic component specific domains
-            base_domains = [
-                "digikey.com", "mouser.com", "farnell.com", 
-                "rs-online.com", "octopart.com", "findchips.com",
-                "datasheetcatalog.com", "alldatasheet.com", "electronics-tutorials.ws"
-            ]
-        else:
-            # General domains
-            base_domains = [
-                "wikipedia.org", "bloomberg.com", "reuters.com", 
-                "sec.gov", "crunchbase.com", "linkedin.com",
-                "forbes.com", "techcrunch.com", "businesswire.com"
-            ]
-        
-        links = []
-        for i, domain in enumerate(base_domains[:top_k]):
-            url = f"https://www.{domain}/search/{query_slug}-{i+1}"
-            links.append(url)
-        
-        return links
-    
-    async def validate_urls(self, urls: List[str]) -> List[str]:
-        """
-        Validate and filter URLs
+        Extract clean list of URLs from SerpEngineOp
         
         Args:
-            urls: List of URLs to validate
+            serp_result: SerpEngineOp from search
             
         Returns:
-            List of valid, unique URLs
+            List of unique, valid URLs
         """
-        valid_urls = []
+        # Use the built-in all_links() method
+        urls = serp_result.all_links()
+        
+        # Additional validation if needed
+        validated_urls = []
         seen_urls = set()
         
         for url in urls:
             if self._is_valid_url(url) and url not in seen_urls:
-                valid_urls.append(url)
+                validated_urls.append(url)
                 seen_urls.add(url)
         
-        return valid_urls
+        return validated_urls
     
     def _is_valid_url(self, url: str) -> bool:
         """
@@ -196,40 +155,141 @@ class SerpService:
             if domain in url.lower():
                 return False
         
-        # Block file downloads that might not contain useful text
-        blocked_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']
-        for ext in blocked_extensions:
-            if url.lower().endswith(ext):
-                return False
-        
         return True
+    
+    def get_channel_statistics(self, serp_result: SerpEngineOp) -> Dict[str, Any]:
+        """
+        Get statistics about search channels used
+        
+        Args:
+            serp_result: SerpEngineOp from search
+            
+        Returns:
+            Dict with channel statistics
+        """
+        stats = {
+            "total_results": len(serp_result.results),
+            "total_cost": serp_result.usage.cost,
+            "total_time": serp_result.elapsed_time,
+            "channels_used": len(serp_result.channels),
+            "by_channel": {}
+        }
+        
+        # Get results grouped by channel
+        results_by_channel = serp_result.results_by_channel()
+        
+        for channel in serp_result.channels:
+            channel_results = results_by_channel.get(channel.name, [])
+            stats["by_channel"][channel.name] = {
+                "results": len(channel_results),
+                "cost": channel.usage.cost,
+                "time": channel.elapsed_time,
+                "top_result": channel_results[0].title if channel_results else None
+            }
+        
+        return stats
     
     async def close(self):
         """Clean up resources"""
-        if hasattr(self, 'client'):
-            await self.client.aclose()
+        # SERPEngine doesn't need explicit cleanup, but keep for interface consistency
+        pass
+    
+    def create_empty_result(self, error_msg: str = "") -> SerpEngineOp:
+        """
+        Create an empty SerpEngineOp for error cases
+        
+        Args:
+            error_msg: Optional error message
+            
+        Returns:
+            Empty SerpEngineOp with no results
+        """
+        return SerpEngineOp(
+            channels=[],
+            usage=UsageInfo(cost=0.0),
+            results=[],
+            elapsed_time=0.0
+        )
 
 
-# For backward compatibility and testing without SERPEngine
-class RateLimiter:
-    """Simple rate limiter for API calls"""
+async def main():
+    """
+    Test the SerpService independently
     
-    def __init__(self, calls_per_minute: int):
-        self.calls_per_minute = calls_per_minute
-        self.calls = []
+    Run with: python -m imputeman.services.serp_service
+    """
+    print("=== Testing SerpService ===")
+    print()
     
-    async def acquire(self):
-        """Wait if necessary to respect rate limits"""
-        now = time.time()
+    # Initialize service
+    try:
+        from ..core.config import SerpConfig
+        config = SerpConfig(top_k_results=5)
+    except:
+        # Fallback for standalone testing
+        config = type('SerpConfig', (), {
+            'top_k_results': 5,
+            'search_engines': ['google_api', 'serpapi'],  # Use correct channel names
+            'timeout_seconds': 30.0
+        })()
+    
+    try:
+        service = SerpService(config)
+        print(f"✅ SerpEngine initialized with channels: {service.engine.available_channels}")
+    except Exception as e:
+        print(f"❌ Failed to initialize SerpService: {e}")
+        print("\nPlease ensure:")
+        print("1. serpengine is installed: pip install serpengine")
+        print("2. You have valid API credentials set as environment variables")
+        print("   - GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID for google_api")
+        print("   - SERPAPI_API_KEY for serpapi")
+        print("   - DATAFORSEO_USERNAME and DATAFORSEO_PASSWORD for dataforseo")
+        return
+    
+    print()
+    
+    # Test basic search
+    print("Testing basic search...")
+    query = "Python web scraping BeautifulSoup"
+    print(f"🔍 Query: '{query}'")
+    
+    try:
+        result = await service.search(query, top_k=5)
         
-        # Remove calls older than 1 minute
-        self.calls = [call_time for call_time in self.calls if now - call_time < 60]
+        print(f"\n📊 Results:")
+        print(f"   Total: {len(result.results)} URLs")
+        print(f"   Cost: ${result.usage.cost:.4f}")
+        print(f"   Time: {result.elapsed_time:.2f}s")
         
-        # If we're at the limit, wait
-        if len(self.calls) >= self.calls_per_minute:
-            wait_time = 60 - (now - self.calls[0])
-            if wait_time > 0:
-                await asyncio.sleep(wait_time)
+        # Show channel breakdown if available
+        if result.channels:
+            print(f"\n📡 Channels used ({len(result.channels)}):")
+            for channel in result.channels:
+                print(f"   - {channel.name}: {len(channel.results)} results, ${channel.usage.cost:.4f}")
         
-        # Record this call
-        self.calls.append(now)
+        # Show sample results
+        if result.results:
+            print(f"\n🔗 Top results:")
+            for i, hit in enumerate(result.results[:3], 1):
+                print(f"   {i}. {hit.title[:60]}...")
+                print(f"      {hit.link}")
+                print(f"      Source: {hit.channel_name} (rank #{hit.channel_rank})")
+        
+    
+       
+    except Exception as e:
+        print(f"\n❌ Search failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    await service.close()
+    print("\n✅ Tests completed!")
+
+
+def main_sync():
+    """Synchronous wrapper for testing"""
+    return asyncio.run(main())
+
+
+if __name__ == "__main__":
+    main_sync()

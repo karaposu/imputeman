@@ -34,6 +34,8 @@ class ImputeEngine:
         self.config = config
         self.registry = ServiceRegistry(config)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        # Ensure we see debug logs during testing
+        self.logger.setLevel(logging.DEBUG)
     
     def initialize(self, entity: Union[str, EntityToImpute], schema: List[WhatToRetain]) -> ImputeOp:
         """
@@ -85,29 +87,41 @@ class ImputeEngine:
         self.logger.info("🔍 Executing SERP phase...")
         
         try:
-            # Execute search
+            # Execute search - now returns SerpEngineOp
             serp_result = await self.registry.serp.search(impute_op.query, top_k=max_urls)
             impute_op.search_op = serp_result
             
             # Track timing and costs
             serp_duration = time.time() - serp_start
             impute_op.performance.serp_duration = serp_duration
-            impute_op.costs.serp_cost = getattr(serp_result, 'cost', 0.0) or 0.0
             
-            # Check success
-            if not serp_result.success or not serp_result.links:
-                error_msg = f"SERP failed: {getattr(serp_result, 'metadata', 'Unknown error')}"
+            # Update cost tracking - now use serp_result.usage.cost
+            impute_op.costs.serp_cost = serp_result.usage.cost if serp_result.usage else 0.0
+            
+            # Check success - now check if we have results
+            if not serp_result.results:
+                error_msg = f"SERP failed: No results found"
                 impute_op.errors.append(error_msg)
                 impute_op.update_status(PipelineStatus.FAILED, error_msg)
                 self.logger.error(error_msg)
                 return []
             
-            # Success - prepare URLs
-            found_urls = serp_result.links[:max_urls]
+            # Success - extract URLs using the new all_links() method
+            found_urls = serp_result.all_links()[:max_urls]
             impute_op.urls = found_urls
             impute_op.mark_serp_completed(len(found_urls))
             
-            self.logger.info(f"✅ Found {len(found_urls)} URLs in {serp_duration:.2f}s")
+            # Log channel statistics if available
+            if hasattr(self.registry.serp, 'get_channel_statistics'):
+                stats = self.registry.serp.get_channel_statistics(serp_result)
+                self.logger.info(f"✅ Found {len(found_urls)} URLs from {stats['channels_used']} channels in {serp_duration:.2f}s")
+                
+                # Log per-channel breakdown
+                for channel_name, channel_stats in stats['by_channel'].items():
+                    self.logger.debug(f"   📡 {channel_name}: {channel_stats['results']} results, ${channel_stats['cost']:.4f}")
+            else:
+                self.logger.info(f"✅ Found {len(found_urls)} URLs in {serp_duration:.2f}s")
+            
             return found_urls
             
         except Exception as e:
@@ -218,8 +232,6 @@ class ImputeEngine:
         if successful_scrapes:
             await self._process_batch_extractions(impute_op, successful_scrapes, capture_metrics)
     
-
-
     async def _handle_completed_scrape(
         self, 
         completed_task: asyncio.Task, 
@@ -245,6 +257,19 @@ class ImputeEngine:
                 # Enhanced scrape completion log with size and cost
                 self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
                 
+                # Debug: Print scrape metadata
+                for scrape_url, scrape_res in scrape_result.items():
+                    if hasattr(scrape_res, 'data') and scrape_res.data:
+                        # Print the 3 fields requested
+                        html_char_size = getattr(scrape_res, 'html_char_size', 'N/A')
+                        row_count = getattr(scrape_res, 'row_count', 'N/A')
+                        field_count = getattr(scrape_res, 'field_count', 'N/A')
+                        
+                        self.logger.info(f"   📊 Scrape metadata for {scrape_url[:40]}...")
+                        self.logger.info(f"      - html_char_size: {html_char_size}")
+                        self.logger.info(f"      - row_count: {row_count}")
+                        self.logger.info(f"      - field_count: {field_count}")
+                
                 # Start extraction - the extractor service will handle phase logging
                 impute_op.mark_url_extracting(url)
                 
@@ -263,59 +288,6 @@ class ImputeEngine:
             impute_op.errors.append(error_msg)
             impute_op.mark_url_scraped(url, False)
             self.logger.error(f"❌ Processing failed for {url[:40]}...: {e}")
-
-
-
-
-
-    # async def _handle_completed_scrape(
-    #     self, 
-    #     completed_task: asyncio.Task, 
-    #     url: str, 
-    #     impute_op: ImputeOp, 
-    #     capture_metrics: bool
-    # ):
-    #     """Handle a completed scrape task in streaming mode"""
-        
-    #     try:
-    #         scrape_result, scrape_metrics = await completed_task
-            
-    #         # Track scrape completion
-    #         scrape_success = scrape_result and any(r.status == "ready" for r in scrape_result.values())
-    #         impute_op.mark_url_scraped(url, scrape_success)
-            
-    #         if scrape_success:
-    #             # Store scrape result and log with details
-    #             impute_op.scrape_results.update(scrape_result)
-    #             scrape_cost, html_size = self._extract_scrape_details(scrape_result)
-    #             impute_op.costs.scrape_cost += scrape_cost
-                
-    #             self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
-                
-    #             # Immediately start extraction
-    #             impute_op.mark_url_extracting(url)
-    #             self.logger.info(f"🧠 Started extracting[Filtering] from {url[:40]}...")
-                
-    #             extract_result, extract_metrics = await self._extract_from_scrape(
-    #                 scrape_result, impute_op.schema, url, capture_metrics
-    #             )
-                
-    #             # Handle extraction completion
-    #             await self._handle_extraction_result(extract_result, url, impute_op)
-                
-    #         else:
-    #             self.logger.warning(f"⚠️ Scrape failed for {url[:40]}...")
-                
-    #     except Exception as e:
-    #         error_msg = f"Processing failed for {url}: {str(e)}"
-    #         impute_op.errors.append(error_msg)
-    #         impute_op.mark_url_scraped(url, False)
-    #         self.logger.error(f"❌ Processing failed for {url[:40]}...: {e}")
-
-
-
-
-
     
     async def _process_batch_scrape_results(self, impute_op: ImputeOp, scrape_results: Dict):
         """Process and log batch scrape results"""
@@ -328,6 +300,18 @@ class ImputeEngine:
                 scrape_cost, html_size = self._extract_scrape_details({url: scrape_result})
                 impute_op.costs.scrape_cost += scrape_cost
                 self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
+                
+                # Debug: Print scrape metadata
+                if hasattr(scrape_result, 'data') and scrape_result.data:
+                    # Print the 3 fields requested
+                    html_char_size = getattr(scrape_result, 'html_char_size', 'N/A')
+                    row_count = getattr(scrape_result, 'row_count', 'N/A')
+                    field_count = getattr(scrape_result, 'field_count', 'N/A')
+                    
+                    self.logger.info(f"   📊 Scrape metadata:")
+                    self.logger.info(f"      - html_char_size: {html_char_size}")
+                    self.logger.info(f"      - row_count: {row_count}")
+                    self.logger.info(f"      - field_count: {field_count}")
             else:
                 self.logger.warning(f"⚠️ Scrape failed for {url[:40]}...")
     
@@ -362,14 +346,116 @@ class ImputeEngine:
             
             self.logger.info(f"✅ Extracted from {url[:40]}... (${extract_cost:.4f})")
             
-            # Store first successful content if available
-            if not impute_op.content:
-                for extract_op in extract_result.values():
-                    if extract_op.success and extract_op.content:
-                        impute_op.content = extract_op.content
-                        break
+            # Debug: Print extraction details
+            for extract_url, extract_op in extract_result.items():
+                if extract_op.success:
+                    self.logger.info(f"   🔍 Extraction details for {extract_url[:40]}...")
+                    
+                    # Token information
+                    if hasattr(extract_op, 'stage_tokens') and extract_op.stage_tokens:
+                        for stage, tokens in extract_op.stage_tokens.items():
+                            input_t = tokens.get('input', 0)
+                            output_t = tokens.get('output', 0)
+                            reduction = ((input_t - output_t) / input_t * 100) if input_t > 0 else 0
+                            self.logger.info(f"      - {stage}: {input_t:,} → {output_t:,} tokens ({reduction:.1f}% reduction)")
+                    
+                    # Filter and Parse results
+                    if hasattr(extract_op, 'filter_op') and extract_op.filter_op:
+                        filter_success = extract_op.filter_op.success
+                        filter_tokens = getattr(extract_op.filter_op, 'filtered_data_token_size', 'N/A')
+                        self.logger.info(f"      - Filter success: {filter_success}, output tokens: {filter_tokens}")
+                    
+                    if hasattr(extract_op, 'parse_op') and extract_op.parse_op:
+                        parse_success = extract_op.parse_op.success
+                        parse_content = extract_op.parse_op.content
+                        self.logger.info(f"      - Parse success: {parse_success}")
+                        self.logger.info(f"      - Parse result type: {type(parse_content).__name__}")
+                        self.logger.info(f"      - Parse result: {parse_content}")
+                    
+                    # Final content
+                    self.logger.info(f"      - Final extract_op.content: {extract_op.content}")
+                else:
+                    self.logger.warning(f"   ❌ Extraction failed for {extract_url[:40]}...")
+                    self.logger.warning(f"      - Error: {extract_op.error}")
+            
+            # Just update the extract_results - no content selection
+            self.logger.info(f"   ✅ Stored extraction result for {url[:40]}...")
         else:
             self.logger.warning(f"⚠️ Extraction failed for {url[:40]}...")
+    
+    def _normalize_extraction_content(self, content: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize extraction content to dictionary format.
+        ExtractHero can return dict, list, or other types.
+        """
+        if content is None:
+            self.logger.debug("   _normalize_extraction_content: content is None")
+            return None
+        
+    def _normalize_extraction_content(self, content: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize extraction content to dictionary format.
+        ExtractHero can return dict, list, or other types.
+        """
+        if content is None:
+            self.logger.info("   _normalize_extraction_content: content is None ⚠️")
+            return None
+        
+        self.logger.debug(f"   _normalize_extraction_content: input type = {type(content).__name__}, value = {content}")
+        
+        if isinstance(content, dict):
+            self.logger.debug(f"   _normalize_extraction_content: returning dict as-is")
+            return content
+        
+        if isinstance(content, list):
+            # If list contains dicts, merge them
+            if content and all(isinstance(item, dict) for item in content):
+                merged = {}
+                for item in content:
+                    merged.update(item)
+                self.logger.debug(f"   _normalize_extraction_content: merged {len(content)} dicts to {merged}")
+                return merged
+            # Empty list
+            elif not content:
+                self.logger.info("   _normalize_extraction_content: empty list ⚠️")
+                return {}
+            # Otherwise, create indexed dict
+            indexed = {f"item_{i}": item for i, item in enumerate(content)}
+            self.logger.debug(f"   _normalize_extraction_content: indexed list to {indexed}")
+            return indexed
+        
+        # For any other type, wrap in dict
+        wrapped = {"value": content}
+        self.logger.debug(f"   _normalize_extraction_content: wrapped {type(content).__name__} to {wrapped}")
+        return wrapped
+        
+        self.logger.debug(f"   _normalize_extraction_content: input type = {type(content).__name__}, value = {content}")
+        
+        if isinstance(content, dict):
+            return content
+        
+        if isinstance(content, list):
+            # If list contains dicts, merge them
+            if content and all(isinstance(item, dict) for item in content):
+                merged = {}
+                for item in content:
+                    merged.update(item)
+                self.logger.debug(f"   _normalize_extraction_content: merged list of dicts to {merged}")
+                return merged
+            # Empty list
+            elif not content:
+                self.logger.info("   _normalize_extraction_content: empty list ⚠️")
+                return {}
+            # Otherwise, create indexed dict
+            indexed = {f"item_{i}": item for i, item in enumerate(content)}
+            self.logger.debug(f"   _normalize_extraction_content: indexed list to {indexed}")
+            return indexed
+        
+        # For any other type, wrap in dict
+        wrapped = {"value": content}
+        self.logger.debug(f"   _normalize_extraction_content: wrapped {type(content).__name__} to {wrapped}")
+        return wrapped
+        return wrapped
     
     async def _scrape_single_url(self, url: str, capture_metrics: bool):
         """Scrape a single URL and optionally capture metrics"""
@@ -445,6 +531,24 @@ class ImputeEngine:
         # Cost breakdown summary
         if impute_op.costs.total_cost > 0:
             self.logger.info(f"   💰 Cost Breakdown: SERP=${impute_op.costs.serp_cost:.4f}, Scrape=${impute_op.costs.scrape_cost:.4f}, Extract=${impute_op.costs.extraction_cost:.4f}")
+        
+        # Log sample extracted content if available
+        if impute_op.extract_results:
+            self.logger.info(f"   📄 Extraction results summary:")
+            for i, (url, extract_op) in enumerate(impute_op.extract_results.items()):
+                if i >= 3:  # Show first 3
+                    self.logger.info(f"      ... and {len(impute_op.extract_results) - 3} more")
+                    break
+                self.logger.info(f"      {url[:40]}...:")
+                if extract_op.success:
+                    self.logger.info(f"         Success: ✅")
+                    self.logger.info(f"         Content: {extract_op.content}")
+                else:
+                    self.logger.info(f"         Success: ❌")
+                    if hasattr(extract_op, 'error'):
+                        self.logger.info(f"         Error: {extract_op.error}")
+        else:
+            self.logger.warning(f"   ⚠️ No extraction results found!")
 
 
 # ========== TESTING / DEMONSTRATION ==========
@@ -537,11 +641,20 @@ async def main():
         print(f"✅ Overall success: {impute_op.success}")
         
         # Show extracted content sample
-        if impute_op.content:
-            print(f"\n📄 Sample extracted content:")
-            for key, value in list(impute_op.content.items())[:2]:  # Show first 2 fields
-                preview = str(value)[:100] + "..." if len(str(value)) > 100 else str(value)
-                print(f"   {key}: {preview}")
+        print(f"\n📄 All Extraction Results:")
+        if impute_op.extract_results:
+            for i, (url, extract_op) in enumerate(impute_op.extract_results.items()):
+                print(f"\n   URL {i+1}: {url[:50]}...")
+                print(f"   Success: {extract_op.success}")
+                if extract_op.content:
+                    print(f"   Content type: {type(extract_op.content).__name__}")
+                    print(f"   Content: {extract_op.content}")
+                else:
+                    print(f"   Content: None ⚠️")
+                if hasattr(extract_op, 'error') and extract_op.error:
+                    print(f"   Error: {extract_op.error}")
+        else:
+            print("   No extraction results available!")
         
         # Show live summary
         print(f"\n📈 Live Summary: {impute_op.get_live_summary()}")

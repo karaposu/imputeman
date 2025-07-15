@@ -5,9 +5,11 @@ import time
 from typing import Dict, Any, List
 from prefect import flow, get_run_logger
 
-from ..core.entities import EntityToImpute, ImputeResult, WhatToRetain
+from serpengine.schemes import SerpEngineOp
+from ..models import ImputeOp, PipelineStatus
+from ..core.entities import EntityToImpute, WhatToRetain
 from ..core.config import PipelineConfig, get_default_config
-from ..tasks.serp_tasks import search_serp_task, validate_serp_results_task
+from ..tasks.serp_tasks import search_serp_task, validate_serp_results_task, extract_urls_from_serp_task
 from ..tasks.scrape_tasks import (
     scrape_urls_task, 
     budget_scrape_urls_task, 
@@ -23,7 +25,7 @@ from ..tasks.extract_tasks import (
 @flow(
     name="imputeman-pipeline",
     description="Complete entity imputation pipeline with conditional logic",
-    version="1.0",
+    version="2.0",  # Updated version for new SerpEngine integration
     retries=1,
     retry_delay_seconds=10
 )
@@ -32,7 +34,7 @@ async def imputeman_flow(
     schema: List[WhatToRetain],
     config: PipelineConfig = None,
     top_k: int = None
-) -> ImputeResult:
+) -> ImputeOp:
     """
     Main Imputeman pipeline flow with conditional branching
     
@@ -43,7 +45,7 @@ async def imputeman_flow(
         top_k: Number of search results (overrides config if provided)
         
     Returns:
-        ImputeResult with complete pipeline results
+        ImputeOp with complete pipeline results
     """
     logger = get_run_logger()
     start_time = time.time()
@@ -54,58 +56,86 @@ async def imputeman_flow(
     
     logger.info(f"Starting imputeman pipeline for entity: {entity.name}")
     
-    # Initialize result object
-    result = ImputeResult(entity=entity, schema=schema)
+    # Build search query
+    query = f"{entity.name}"
+    if entity.identifier_context:
+        query += f" {entity.identifier_context}"
+    if entity.impute_task_purpose:
+        query += f" {entity.impute_task_purpose}"
+    
+    # Initialize ImputeOp
+    impute_op = ImputeOp(query=query, schema=schema)
+    impute_op.update_status(PipelineStatus.RUNNING)
     
     try:
         # Stage 1: Search (SERP)
         logger.info("🔍 Starting search stage...")
+        serp_start = time.time()
+        
         serp_result = await search_serp_task(
-            query=entity.name, 
+            query=query, 
             config=config.serp_config,
-            top_k=top_k
+            top_k=top_k or config.serp_config.top_k_results
         )
         
-        if not serp_result.success:
-            logger.error("Search stage failed, cannot continue pipeline")
-            result.success = False
-            result.total_elapsed_time = time.time() - start_time
-            return result
+        # Update ImputeOp with search results
+        impute_op.search_op = serp_result
+        impute_op.performance.serp_duration = time.time() - serp_start
+        impute_op.costs.serp_cost = serp_result.usage.cost if serp_result.usage else 0.0
+        
+        if not serp_result.results:
+            logger.error("Search stage failed - no results found")
+            impute_op.update_status(PipelineStatus.FAILED, "No search results")
+            impute_op.finalize(success=False)
+            return impute_op
         
         # Validate search results
         serp_result = await validate_serp_results_task(serp_result)
-        result.serp_result = serp_result
+        
+        # Extract URLs
+        urls = await extract_urls_from_serp_task(serp_result)
+        impute_op.urls = urls
+        impute_op.mark_serp_completed(len(urls))
+        
+        logger.info(f"Found {len(urls)} URLs from {len(serp_result.channels)} search channels")
         
         # Stage 2: Scraping (with conditional logic)
         logger.info("🕷️ Starting scraping stage...")
-        scrape_results = await scrape_urls_task(serp_result, config.scrape_config)
+        scrape_results = await scrape_urls_task(urls, config.scrape_config)
         
         # Analyze scraping costs
         cost_analysis = await analyze_scrape_costs_task(scrape_results)
+        
+        # Update ImputeOp
+        impute_op.scrape_results = scrape_results
+        for url, result in scrape_results.items():
+            impute_op.mark_url_scraped(url, result.status == "ready")
         
         # Conditional: If scraping was too expensive, try budget approach
         if cost_analysis["total_cost"] > config.cost_threshold_for_budget_mode:
             logger.warning(f"Scraping cost ${cost_analysis['total_cost']:.2f} exceeded threshold")
             logger.info("🚧 Switching to budget scraping mode...")
             
-            # Try budget scraping for remaining URLs or retry failed ones
-            budget_scrape_results = await budget_scrape_urls_task(
-                serp_result, 
-                config.budget_scrape_config
-            )
+            # Get failed URLs for retry
+            failed_urls = [url for url, result in scrape_results.items() if result.status != "ready"]
             
-            # Combine or choose better results
-            scrape_results = _merge_scrape_results(scrape_results, budget_scrape_results)
-        
-        result.scrape_results = scrape_results
+            if failed_urls:
+                budget_scrape_results = await budget_scrape_urls_task(
+                    failed_urls, 
+                    config.budget_scrape_config
+                )
+                
+                # Merge results
+                scrape_results = _merge_scrape_results(scrape_results, budget_scrape_results)
+                impute_op.scrape_results = scrape_results
         
         # Check if we have enough successful scrapes to continue
         successful_scrapes = sum(1 for r in scrape_results.values() if r.status == "ready")
         if successful_scrapes == 0:
             logger.error("No successful scrapes, cannot continue to extraction")
-            result.success = False
-            result.total_elapsed_time = time.time() - start_time
-            return result
+            impute_op.update_status(PipelineStatus.FAILED, "No successful scrapes")
+            impute_op.finalize(success=False)
+            return impute_op
         
         # Stage 3: Extraction
         logger.info("🧠 Starting extraction stage...")
@@ -115,17 +145,23 @@ async def imputeman_flow(
             config.extract_config
         )
         
+        # Update ImputeOp
+        impute_op.extract_results = extract_results
+        for url, result in extract_results.items():
+            impute_op.mark_url_extracted(url, result.success)
+        
         # Validate extractions
         validated_extractions = await validate_extractions_task(
             extract_results, 
             config.extract_config
         )
         
-        result.extract_results = extract_results
-        
         # Check if we have enough quality extractions
         if len(validated_extractions) < config.min_successful_extractions:
-            logger.warning(f"Only {len(validated_extractions)} successful extractions, below minimum {config.min_successful_extractions}")
+            logger.warning(
+                f"Only {len(validated_extractions)} successful extractions, "
+                f"below minimum {config.min_successful_extractions}"
+            )
             
             # Conditional: Try with lower confidence threshold
             relaxed_config = config.extract_config
@@ -141,31 +177,30 @@ async def imputeman_flow(
         if validated_extractions:
             logger.info("📊 Aggregating final results...")
             final_data = await aggregate_final_data_task(validated_extractions)
-            result.final_data = final_data
-            result.success = True
+            impute_op.content = final_data
+            impute_op.finalize(success=True)
         else:
             logger.error("No valid extractions available for aggregation")
-            result.success = False
+            impute_op.finalize(success=False)
         
         # Calculate final metrics
-        result.total_cost = (
-            sum(r.cost for r in scrape_results.values()) +
-            sum(r.cost for r in extract_results.values())
+        impute_op.performance.total_elapsed_time = time.time() - start_time
+        
+        logger.info(f"✅ Pipeline completed in {impute_op.performance.total_elapsed_time:.2f}s")
+        logger.info(f"💰 Total cost: ${impute_op.costs.total_cost:.2f}")
+        logger.info(
+            f"📈 Results: {impute_op.performance.successful_extractions} extractions "
+            f"from {impute_op.performance.successful_scrapes} scrapes"
         )
-        result.total_elapsed_time = time.time() - start_time
         
-        logger.info(f"✅ Pipeline completed successfully in {result.total_elapsed_time:.2f}s")
-        logger.info(f"💰 Total cost: ${result.total_cost:.2f}")
-        logger.info(f"📈 Results: {result.successful_extractions} extractions from {result.total_urls_scraped} URLs")
-        
-        return result
+        return impute_op
         
     except Exception as e:
         logger.error(f"Pipeline failed with error: {e}")
-        result.success = False
-        result.total_elapsed_time = time.time() - start_time
-        result.metadata["error"] = str(e)
-        return result
+        impute_op.errors.append(str(e))
+        impute_op.update_status(PipelineStatus.FAILED, str(e))
+        impute_op.finalize(success=False)
+        return impute_op
 
 
 def _merge_scrape_results(primary_results, secondary_results):
@@ -196,13 +231,13 @@ def _merge_scrape_results(primary_results, secondary_results):
 @flow(
     name="imputeman-simple",
     description="Simplified pipeline without conditional logic",
-    version="1.0"
+    version="2.0"
 )
 async def simple_imputeman_flow(
     entity: EntityToImpute,
     schema: List[WhatToRetain],
     top_k: int = 5
-) -> ImputeResult:
+) -> ImputeOp:
     """
     Simplified pipeline for basic use cases without complex conditional logic
     
@@ -212,7 +247,7 @@ async def simple_imputeman_flow(
         top_k: Number of search results
         
     Returns:
-        ImputeResult with pipeline results
+        ImputeOp with pipeline results
     """
     config = get_default_config()
     config.serp_config.top_k_results = top_k
@@ -225,7 +260,7 @@ async def run_imputeman_async(
     entity: EntityToImpute,
     schema: List[WhatToRetain],
     top_k: int = 10
-) -> ImputeResult:
+) -> ImputeOp:
     """
     Async convenience function to run the imputeman pipeline
     
@@ -235,6 +270,6 @@ async def run_imputeman_async(
         top_k: Number of search results
         
     Returns:
-        ImputeResult
+        ImputeOp
     """
     return await imputeman_flow(entity, schema, top_k=top_k)

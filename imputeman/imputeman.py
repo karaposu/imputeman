@@ -1,10 +1,12 @@
 # imputeman.py
 # to run python -m imputeman.imputeman
 
+
+
 import asyncio
 import time
 from typing import List, Optional, Union
-import logging
+
 
 from .core.entities import EntityToImpute, WhatToRetain
 from .core.config import PipelineConfig, get_development_config
@@ -12,7 +14,15 @@ from .models import ImputeOp
 from .impute_engine import ImputeEngine
 
 
-logger = logging.getLogger(__name__)
+
+import logging
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(message)s'  # Just show the message, no timestamp or logger name
+)
+
 
 
 class Imputeman:
@@ -206,7 +216,7 @@ async def main():
     # Get configuration
     config = get_development_config()
     
-    print("🚀 Testing Clean Imputeman Orchestrator")
+    print("🚀 Testing Imputeman Orchestrator")
     print("=" * 50)
     print(f"🎯 Entity: {entity.name}")
     print(f"📋 Schema: {len(schema)} fields")
@@ -216,8 +226,9 @@ async def main():
     imputeman = Imputeman(config)
     
     print("🔄 Running full pipeline with streaming...")
+    print(" ")
     impute_op = await imputeman.run(
-        entity=entity,  # or just "BAV99"
+        entity=entity,  
         schema=schema,
         max_urls=5,
         enable_streaming=True,
@@ -237,26 +248,50 @@ async def main():
     print(f"   Performance: Success rate {impute_op.performance.successful_extractions}/{impute_op.performance.urls_found}")
     print(f"   Cost breakdown: SERP=${impute_op.costs.serp_cost:.4f}, Scrape=${impute_op.costs.scrape_cost:.4f}, Extract=${impute_op.costs.extraction_cost:.4f}")
     
-    # Check extracted content
-    if impute_op.content:
-        print(f"\n📋 Extracted Content Sample:")
-        for key, value in list(impute_op.content.items())[:2]:  # Show first 2 fields
-            preview = str(value)[:100] + "..." if len(str(value)) > 100 else str(value)
-            print(f"   {key}: {preview}")
+    # Show ALL extracted content from ALL URLs
+    if impute_op.extract_results:
+        print(f"\n📋 All Extraction Results ({len(impute_op.extract_results)} URLs):")
+        print("=" * 50)
+        
+        for i, (url, extract_op) in enumerate(impute_op.extract_results.items(), 1):
+            print(f"\n🔗 Result {i}: {url[:60]}...")
+            print(f"   Success: {'✅' if extract_op.success else '❌'}")
+            
+            if extract_op.success and extract_op.content:
+                print(f"   Content type: {type(extract_op.content).__name__}")
+                
+                # Show the actual extracted data
+                if isinstance(extract_op.content, list):
+                    for j, item in enumerate(extract_op.content):
+                        print(f"   Item {j+1}: {item}")
+                elif isinstance(extract_op.content, dict):
+                    for key, value in extract_op.content.items():
+                        print(f"   {key}: {value}")
+                else:
+                    print(f"   Content: {extract_op.content}")
+                    
+                # Show token usage if available
+                if hasattr(extract_op, 'stage_tokens') and extract_op.stage_tokens:
+                    print(f"   Token usage:")
+                    for stage, tokens in extract_op.stage_tokens.items():
+                        input_t = tokens.get('input', 0)
+                        output_t = tokens.get('output', 0)
+                        if input_t > 0:
+                            reduction = ((input_t - output_t) / input_t * 100)
+                            print(f"      {stage}: {input_t:,} → {output_t:,} ({reduction:.1f}% reduction)")
+            else:
+                if hasattr(extract_op, 'error') and extract_op.error:
+                    print(f"   Error: {extract_op.error}")
+                else:
+                    print(f"   No content extracted")
+    else:
+        print(f"\n⚠️ No extraction results available")
     
-    # Demonstrate search-only functionality
-    print(f"\n🔄 Testing search-only functionality...")
-    urls = await imputeman.run_search_only(entity, max_urls=3)
-    print(f"   Found {len(urls)} URLs:")
-    for i, url in enumerate(urls, 1):
-        print(f"   {i}. {url[:60]}...")
-    
-    # Demonstrate batch mode
-    print(f"\n🔄 Testing batch mode...")
-    batch_result = await imputeman.run_batch_mode(entity, schema[:1], max_urls=2)  # Smaller test
-    print(f"   Batch result: {batch_result.success} ({batch_result.performance.successful_extractions} extractions)")
-    
-    print(f"\n✅ All Imputeman orchestrator tests completed!")
+    # Show errors if any
+    if impute_op.errors:
+        print(f"\n⚠️ Errors encountered:")
+        for error in impute_op.errors:
+            print(f"   - {error}")
     
     return impute_op
 
@@ -267,13 +302,10 @@ def main_sync():
 
 
 if __name__ == "__main__":
-    print("🚀 Running Clean Imputeman Orchestrator...")
-    print("   Command: python -m imputeman.imputeman")
-    print()
-    
+  
     result = main_sync()
     
     if result and result.success:
         print(f"\n🎉 Imputeman orchestrator test completed successfully!")
     else:
-        print(f"\n💥 Imputeman orchestrator test had issues - check logs above.")
+        print(f"\n⚠️ Imputeman orchestrator completed with issues")

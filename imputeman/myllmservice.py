@@ -7,6 +7,8 @@ import asyncio
 from llmservice.base_service import BaseLLMService
 from llmservice.generation_engine import GenerationRequest, GenerationResult
 from typing import Optional, Union
+from  imputeman import prompts
+
 
 
 class MyLLMService(BaseLLMService):
@@ -21,9 +23,6 @@ class MyLLMService(BaseLLMService):
        
     # def filter, parse
 
-
-   
-
     def parse_via_llm(
         self,
         corpus: str,
@@ -31,19 +30,16 @@ class MyLLMService(BaseLLMService):
         model = None,
     ) -> GenerationResult:
         
-        formatted_prompt = f"""Here is the text corpus relevant to our task:
-                            {corpus}
+        
+        user_prompt = prompts.PARSE_VIA_LLM_PROMPT.format(
+            corpus=corpus,
+            parse_keywords=parse_keywords,
+           
+        )
+        
 
-                            Here is keywords which should be used for parsing:
-                            {parse_keywords}
-                            
-                            Task Description:
-                            Your job is to parse the text into a json format using given keys, Do NOT add or remove information. Your job is parsing. 
-                            IF there is no information regarding any keyword, you must put it's value as None 
-                            
-                            Give the output in strict JSON format
-                            
-                            """
+       
+        
         pipeline_config = [
             {
                 "type": "ConvertToDict",
@@ -54,9 +50,12 @@ class MyLLMService(BaseLLMService):
         
         if model is None:
             model= "gpt-4o-mini"
-
+            # model=  "gpt-4.1-nano"
+          
+           
+        
         generation_request = GenerationRequest(
-            formatted_prompt=formatted_prompt,
+            formatted_prompt=user_prompt,
             model=model,
             output_type="str",
             operation_name="parse_via_llm",
@@ -67,36 +66,60 @@ class MyLLMService(BaseLLMService):
         result = self.execute_generation(generation_request)
         return result
     
-
-
-    
-
-    
     def filter_via_llm(
         self,
         corpus: str,
         thing_to_extract,
         model = None,
+        filter_strategy=None
     ) -> GenerationResult:
         
-        formatted_prompt = f"""Here is the text corpus relevant to our task:
-                            {corpus}
-
-                            Here is the information we are interested in:
-                            {thing_to_extract}
-
-                            Task Description:
-                            Your job is to filter all relevant information from the provided corpus according to the criteria above.
-                            The output should be a text corpus containing the filtered piece(s), preserving their original wording.
-                            """
+     
 
        
+        if filter_strategy=="liberal":
+            user_prompt = prompts.PROPMT_filter_via_llm_liberal.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+        elif filter_strategy=="inclusive": 
+            user_prompt = prompts.PROPMT_filter_via_llm_INCLUSIVE.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+        elif filter_strategy=="contextual":
+
+            user_prompt = prompts.PROPMT_filter_via_llm_contextual.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+
+        elif filter_strategy=="recall":
+            user_prompt = prompts.PROPMT_filter_via_llm_recall.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+             
+        elif filter_strategy=="base":
+            user_prompt = prompts.PROPMT_filter_via_llm_base.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+        
+    
     
         if model is None:
-            model= "gpt-4o-mini"
-
+            #model= "gpt-4o-mini"
+            
+            model=  "gpt-4.1-nano"
+        
         generation_request = GenerationRequest(
-            formatted_prompt=formatted_prompt,
+            formatted_prompt=user_prompt,
             model=model,
             output_type="str",
             operation_name="filter_via_llm",
@@ -108,37 +131,61 @@ class MyLLMService(BaseLLMService):
         return result
     
     
+
+
+
+
+
     async def filter_via_llm_async(
         self,
         corpus: str,
         thing_to_extract,
         model = None,
+        filter_strategy=None
     ) -> GenerationResult:
         
-        formatted_prompt = f"""Here is the text corpus relevant to our task:
-                            {corpus}
+        
+       
+        if filter_strategy=="liberal":
+            user_prompt = prompts.PROPMT_filter_via_llm_liberal.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+        elif filter_strategy=="inclusive": 
+            user_prompt = prompts.PROPMT_filter_via_llm_INCLUSIVE.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+        elif filter_strategy=="contextual":
 
-                            Here is the information we are interested in:
-                            {thing_to_extract}
+            user_prompt = prompts.PROPMT_filter_via_llm_contextual.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
 
-                            Task Description:
-                            Your job is to filter all relevant information from the provided corpus according to the criteria above.
-                            The output should be a text corpus containing the filtered piece(s), preserving their original wording.
-                            """
-
-        # pipeline_config = [
-        #     {
-        #         "type": "SemanticIsolation",
-        #         "params": {"semantic_element_for_extraction": "pure category"},
-        #     }
-        # ]
+        elif filter_strategy=="recall":
+            user_prompt = prompts.PROPMT_filter_via_llm_recall.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
+             
+        else:
+            user_prompt = prompts.PROPMT_filter_via_llm_base.format(
+            corpus=corpus,
+            thing_to_extract=thing_to_extract
+   
+            )
     
-
+         
         if model is None:
             model= "gpt-4o-mini"
 
         generation_request = GenerationRequest(
-            formatted_prompt=formatted_prompt,
+            formatted_prompt=user_prompt,
             model=model,
             output_type="str",
             operation_name="filter_via_llm",
@@ -151,7 +198,7 @@ class MyLLMService(BaseLLMService):
         return result
     
 
-
+    
         # ────────────────────────── async variant ──────────────────────────
     async def parse_via_llm_async(
         self,
@@ -163,27 +210,20 @@ class MyLLMService(BaseLLMService):
         Non-blocking version of parse_via_llm().
         Requires BaseLLMService.execute_generation_async.
         """
-        formatted_prompt = f"""Here is the text corpus relevant to our task:
-            {corpus}
-
-            Here are the keywords to parse:
-            {parse_keywords}
-
-            Task:
-            Convert the corpus into strict JSON with those keys.
-            Do NOT add or remove keys; if information is missing, assign null.
-
-            Return strict JSON only.
-            """
+        user_prompt = prompts.PARSE_VIA_LLM_PROMPT.format(
+            corpus=corpus,
+            parse_keywords=parse_keywords,
+           
+        )
 
         pipeline_config = [
             {"type": "ConvertToDict", "params": {}},
         ]
 
         model = model or "gpt-4o-mini"
-
+        
         gen_request = GenerationRequest(
-            formatted_prompt=formatted_prompt,
+            formatted_prompt=user_prompt,
             model=model,
             output_type="str",
             operation_name="parse_via_llm_async",
@@ -192,130 +232,6 @@ class MyLLMService(BaseLLMService):
 
         # BaseLLMService supplies execute_generation_async()
         return await self.execute_generation_async(gen_request)
-
-    
-
-
-    async def dummy_categorize_simple_async( self) -> GenerationResult:
-        """
-        Same prompt as categorize_simple, but issued through
-        BaseLLMService.execute_generation_async so it can be awaited
-        from an asyncio event-loop (e.g. your phase-3 pipeline).
-        """
-        formatted_prompt = """Here is list of classes: Food & Dining
-                                                        Utilities
-                                                        Accommodation
-                                                        Incoming P2P Transfer
-                                                        Outgoing P2P Transfers
-                                                        Cash Withdrawal
-                                                        Cash Deposit
-                                                        Healthcare
-                                                        Leisure and Activities in Real Life
-                                                        Retail Purchases
-                                                        Personal Care
-                                                        Online Subscriptions & Services,
-        
-
-                            and here is string record to be classified:
-
-                            pharmacy - eczane 30 dollars 28.05.24
-
-                            Task Description:
-                            Identify the Category: Determine which of the categories the string belongs to.
-                            Extra Information - Helpers:  There might be additional information under each subcategory labeled as 'helpers'. These helpers include descs for the taxonomy,  but
-                            should be considered as extra information and not directly involved in the classification task
-                            Instructions:
-                            Given the string record, first identify the category of the given string using given category list,  (your final answer shouldn't include words like "likely").
-                            Use the 'Helpers' section for additional context.  And also at the end explain your reasoning in a very short way. 
-                            Make sure category is selected from given categories and matches 100%
-                            Examples:
-                            Record: "Jumper Cable"
-                            lvl1: interconnectors
-                            
-                            Record: "STM32"
-                            lvl1: microcontrollers
-        """
-        
-        pipeline_config = [
-            {
-                "type": "SemanticIsolation",
-                "params": {"semantic_element_for_extraction": "pure category"},
-            }
-        ]
-
-        generation_request = GenerationRequest(
-            formatted_prompt=formatted_prompt,
-            model="gpt-4o-mini",
-            output_type="str",
-            operation_name="categorize_simple_async",
-            pipeline_config=pipeline_config,
-        )
-
-        # BaseLLMService already exposes an async runner:
-        result = await self.execute_generation_async(generation_request)
-        return result
-
-
-
-    
-    def dummy_categorize_simple(self) -> GenerationResult:
-        
-        formatted_prompt = """Here is list of classes: Food & Dining
-                                                        Utilities
-                                                        Accommodation
-                                                        Incoming P2P Transfer
-                                                        Outgoing P2P Transfers
-                                                        Cash Withdrawal
-                                                        Cash Deposit
-                                                        Healthcare
-                                                        Leisure and Activities in Real Life
-                                                        Retail Purchases
-                                                        Personal Care
-                                                        Online Subscriptions & Services,
-        
-                            and here is string record to be classified:  
-                            
-                            pharmacy - eczane 30 dollars 28.05.24
-
-                            Task Description:
-                            Identify the Category: Determine which of the categories the string belongs to.
-                            Extra Information - Helpers:  There might be additional information under each subcategory labeled as 'helpers'. These helpers include descs for the taxonomy,  but
-                            should be considered as extra information and not directly involved in the classification task
-                            Instructions:
-                            Given the string record, first identify the category of the given string using given category list,  (your final answer shouldnt include words like "likely").
-                            Use the 'Helpers' section for additional context.  And also at the end explain your reasoning in a very short way. 
-                            Make sure category is selected from given categories and matches 100%
-                            Examples:
-                            Record: "Jumper Cable"
-                            lvl1: interconnectors
-                            
-                            Record: "STM32"
-                            lvl1: microcontrollers
-                             """
-
-
-        pipeline_config = [
-            {
-                'type': 'SemanticIsolation',
-                'params': {
-                    'semantic_element_for_extraction': 'pure category'
-                }
-            }
-        ]
-
-        generation_request = GenerationRequest(
-            formatted_prompt=formatted_prompt,
-            model="gpt-4o-mini",
-            output_type="str",
-            operation_name="categorize_simple",
-           pipeline_config= pipeline_config,
-            
-        )
-
-        generation_result = self.execute_generation(generation_request)
-
-    
-        return generation_result
 
 
 

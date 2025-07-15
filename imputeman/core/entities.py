@@ -7,6 +7,7 @@ from datetime import datetime
 from brightdata.models import ScrapeResult
 
 from extracthero import ExtractOp,ParseOp, FilterOp
+from serpengine.schemes import SearchHit, SerpChannelOp, SerpEngineOp, UsageInfo
 
 
 @dataclass
@@ -29,16 +30,6 @@ class EntityToImpute:
             raise ValueError("Entity name cannot be empty")
 
 
-@dataclass
-class SerpResult:
-    """Result from search engine operation"""
-    query: str
-    links: List[str]
-    total_results: int
-    search_engine: str
-    elapsed_time: float
-    success: bool
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 
@@ -48,7 +39,7 @@ class ImputeResult:
     """Final result from the complete imputation pipeline"""
     entity: EntityToImpute
     schema: List[WhatToRetain]
-    serp_result: Optional[SerpResult] = None
+    serp_result: Optional[SerpEngineOp] = None
     scrape_results: Dict[str, ScrapeResult] = field(default_factory=dict)
     extract_results: Dict[str, ExtractOp] = field(default_factory=dict)
     final_data: Dict[str, Any] = field(default_factory=dict)

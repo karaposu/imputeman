@@ -1,10 +1,10 @@
 # imputeman/services/__init__.py
 """Service layer for Imputeman - handles external integrations and business logic"""
 
+from typing import Optional
 from .serp_service import SerpService
 from .scraper_service import ScraperService
 from .extractor_service import ExtractorService
-
 from ..core.config import PipelineConfig
 
 
@@ -18,9 +18,9 @@ class ServiceRegistry:
     
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self._serp_service = None
-        self._scraper_service = None
-        self._extractor_service = None
+        self._serp_service: Optional[SerpService] = None
+        self._scraper_service: Optional[ScraperService] = None
+        self._extractor_service: Optional[ExtractorService] = None
     
     @property
     def serp(self) -> SerpService:
@@ -54,7 +54,7 @@ class ServiceRegistry:
 
 
 # Global service registry instance (initialized by tasks)
-_service_registry = None
+_service_registry: Optional[ServiceRegistry] = None
 
 
 def get_service_registry(config: PipelineConfig = None) -> ServiceRegistry:

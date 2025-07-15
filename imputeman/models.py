@@ -8,6 +8,7 @@ from brightdata.models import ScrapeResult
 from extracthero.schemes import ExtractOp, WhatToRetain
 from enum import Enum
 from datetime import datetime
+from serpengine.schemes import SerpEngineOp 
 
 
 @dataclass

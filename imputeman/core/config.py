@@ -6,15 +6,18 @@ from typing import Dict, Any, Optional
 import os
 
 
+# In imputeman/core/config.py, update the SerpConfig class:
+
 @dataclass
 class SerpConfig:
     """Configuration for SERP/search tasks"""
-    max_retries: int = 3
+    max_retries: int = 1
     retry_delay_seconds: int = 2
     timeout_seconds: float = 30.0
     rate_limit_per_minute: Optional[int] = None
     top_k_results: int = 10
-    search_engines: list = field(default_factory=lambda: ["google", "bing"])
+    # search_engines: list = field(default_factory=lambda: ["google_api", "serpapi"])  
+    search_engines: list = field(default_factory=lambda: ["google_api"])  
     api_key: Optional[str] = None
     
     def __post_init__(self):
@@ -25,7 +28,7 @@ class SerpConfig:
 @dataclass  
 class ScrapeConfig:
     """Configuration for web scraping tasks"""
-    max_retries: int = 3
+    max_retries: int = 1
     retry_delay_seconds: int = 5
     timeout_seconds: float = 60.0
     concurrent_limit: int = 500
@@ -44,7 +47,7 @@ class ScrapeConfig:
 @dataclass
 class ExtractConfig:
     """Configuration for data extraction tasks"""
-    max_retries: int = 2
+    max_retries: int = 1
     retry_delay_seconds: int = 3
     timeout_seconds: float = 120.0
     confidence_threshold: float = 0.7
@@ -87,6 +90,8 @@ class PipelineConfig:
     cost_threshold_for_budget_mode: float = 100.0
     min_successful_extractions: int = 1
     quality_threshold: float = 0.8
+
+    min_scrape_chars: int = 1000  # Minimum characters for valid scrape
 
 
 def get_default_config() -> PipelineConfig:
