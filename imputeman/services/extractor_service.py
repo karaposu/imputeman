@@ -227,9 +227,9 @@ class ExtractorService:
                 
                 # Log token usage if available
                 if result.stage_tokens:
-                    logger.debug(f"Token usage for {url[:40]}...:")
+                    logger.debug(f"Token reduction details for {url[:40]}...:")
                     for stage, tokens in result.stage_tokens.items():
-                        logger.debug(f"  {stage}: {tokens.get('input', 0)} → {tokens.get('output', 0)} tokens")
+                        logger.debug(f"     {stage}: {tokens.get('input', 0)} → {tokens.get('output', 0)} tokens")
         
         return extract_results
     

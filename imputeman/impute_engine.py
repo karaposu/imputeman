@@ -6,7 +6,7 @@ This engine contains all the complex logic, detailed logging, metrics tracking,
 error handling, and coordination between services. The main Imputeman class
 simply orchestrates by calling these clean methods.
 
-python -m imputeman.impute_engine
+python -m imputeman.new_impute_engine
 """
 
 import asyncio
@@ -21,6 +21,10 @@ from .services import ServiceRegistry
 from .models import ImputeOp, PipelineStatus
 from extracthero.schemes import ExtractOp
 
+# Add temporary debugging
+logger = logging.getLogger(__name__)
+logger.debug("ImputeEngine module loaded")
+
 
 class ImputeEngine:
     """
@@ -32,10 +36,22 @@ class ImputeEngine:
     
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.registry = ServiceRegistry(config)
-        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        # Ensure we see debug logs during testing
-        self.logger.setLevel(logging.DEBUG)
+        try:
+            self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+            # Ensure we see debug logs during testing
+            self.logger.setLevel(logging.DEBUG)
+            
+            self.logger.debug(f"Initializing ImputeEngine with config: {config}")
+            self.logger.debug(f"ScrapeConfig attributes: {[attr for attr in dir(config.scrape_config) if not attr.startswith('_')]}")
+            
+            self.registry = ServiceRegistry(config)
+            self.logger.debug(f"ServiceRegistry initialized successfully")
+        except Exception as e:
+            self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+            self.logger.error(f"Failed to initialize ImputeEngine: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     def initialize(self, entity: Union[str, EntityToImpute], schema: List[WhatToRetain]) -> ImputeOp:
         """
@@ -107,7 +123,7 @@ class ImputeEngine:
                 return []
             
             # Success - extract URLs using the new all_links() method
-            found_urls = serp_result.all_links()[:max_urls]
+            found_urls = serp_result.all_links[:max_urls]
             impute_op.urls = found_urls
             impute_op.mark_serp_completed(len(found_urls))
             
@@ -254,6 +270,14 @@ class ImputeEngine:
                 scrape_cost, html_size = self._extract_scrape_details(scrape_result)
                 impute_op.costs.scrape_cost += scrape_cost
                 
+                # Check if scrape size is too small BEFORE marking as successful
+                min_chars = getattr(self.config, 'min_scrape_chars', 1000)  # Default 1000 chars
+                if html_size < min_chars:
+                    self.logger.warning(f"⚠️ Scraped {url[:40]}... but too small ({html_size} < {min_chars} chars) - likely an error page")
+                    self.logger.info(f"   🚫 Skipping extraction for {url[:40]}... due to insufficient content")
+                    impute_op.errors.append(f"Scrape for {url[:40]}... too small: {html_size} chars")
+                    return  # Exit early, don't extract
+                
                 # Enhanced scrape completion log with size and cost
                 self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
                 
@@ -264,11 +288,11 @@ class ImputeEngine:
                         html_char_size = getattr(scrape_res, 'html_char_size', 'N/A')
                         row_count = getattr(scrape_res, 'row_count', 'N/A')
                         field_count = getattr(scrape_res, 'field_count', 'N/A')
-                        
-                        self.logger.info(f"   📊 Scrape metadata for {scrape_url[:40]}...")
-                        self.logger.info(f"      - html_char_size: {html_char_size}")
-                        self.logger.info(f"      - row_count: {row_count}")
-                        self.logger.info(f"      - field_count: {field_count}")
+                        self.logger.info(f"       ")
+                        self.logger.info(f"   📊 ScrapeOp metadata for {scrape_url[:40]}...")
+                        self.logger.info(f"           - html_char_size: {html_char_size}")
+                        self.logger.info(f"           - row_count: {row_count}")
+                        self.logger.info(f"           - field_count: {field_count}")
                 
                 # Start extraction - the extractor service will handle phase logging
                 impute_op.mark_url_extracting(url)
@@ -288,6 +312,9 @@ class ImputeEngine:
             impute_op.errors.append(error_msg)
             impute_op.mark_url_scraped(url, False)
             self.logger.error(f"❌ Processing failed for {url[:40]}...: {e}")
+            self.logger.debug(f"   Exception details: {type(e).__name__}")
+            import traceback
+            self.logger.debug(f"   Traceback:\n{traceback.format_exc()}")
     
     async def _process_batch_scrape_results(self, impute_op: ImputeOp, scrape_results: Dict):
         """Process and log batch scrape results"""
@@ -300,6 +327,14 @@ class ImputeEngine:
                 scrape_cost, html_size = self._extract_scrape_details({url: scrape_result})
                 impute_op.costs.scrape_cost += scrape_cost
                 self.logger.info(f"✅ Scraped {url[:40]}... ({html_size:,} chars, ${scrape_cost:.4f})")
+                
+                # Check if scrape size is too small
+                min_chars = getattr(self.config, 'min_scrape_chars', 1000)  # Default 1000 chars
+                if html_size < min_chars:
+                    self.logger.warning(f"   ⚠️ Scrape too small ({html_size} < {min_chars} chars), likely an error page - marking as failed")
+                    impute_op.mark_url_scraped(url, False)  # Override to failed
+                    impute_op.errors.append(f"Scrape for {url[:40]}... too small: {html_size} chars")
+                    scrape_success = False
                 
                 # Debug: Print scrape metadata
                 if hasattr(scrape_result, 'data') and scrape_result.data:
@@ -460,12 +495,24 @@ class ImputeEngine:
     async def _scrape_single_url(self, url: str, capture_metrics: bool):
         """Scrape a single URL and optionally capture metrics"""
         
-        scrape_result = await self.registry.scraper.scrape_urls([url])
-        
-        # Future: Could add detailed timing metrics here
-        scrape_metrics = None
-        
-        return scrape_result, scrape_metrics
+        try:
+            self.logger.debug(f"        🔍 Attempting to scrape {url[:40]}...")
+          #  self.logger.debug(f"      Scraper config: {self.config.scrape_config}")
+           # self.logger.debug(f"      Config attributes: {[attr for attr in dir(self.config.scrape_config) if not attr.startswith('_')]}")
+            
+            scrape_result = await self.registry.scraper.scrape_urls([url])
+            
+            # Future: Could add detailed timing metrics here
+            scrape_metrics = None
+            
+            return scrape_result, scrape_metrics
+            
+        except Exception as e:
+            self.logger.error(f"   ❌ Scrape failed for {url[:40]}...: {str(e)}")
+            self.logger.error(f"      Exception type: {type(e).__name__}")
+            import traceback
+            self.logger.error(f"      Traceback: {traceback.format_exc()}")
+            raise
     
     async def _extract_from_scrape(self, scrape_result: Dict, schema: List[WhatToRetain], url: str, capture_metrics: bool):
         """Extract data from scrape result"""
@@ -534,7 +581,9 @@ class ImputeEngine:
         
         # Log sample extracted content if available
         if impute_op.extract_results:
+            self.logger.info(f"  ")
             self.logger.info(f"   📄 Extraction results summary:")
+            self.logger.info(f"  ")
             for i, (url, extract_op) in enumerate(impute_op.extract_results.items()):
                 if i >= 3:  # Show first 3
                     self.logger.info(f"      ... and {len(impute_op.extract_results) - 3} more")
@@ -585,6 +634,13 @@ async def main():
         print(f"📋 Schema: {len(schema)} fields to extract")
         print()
         
+        # Print config details
+        print(f"⚙️ Configuration:")
+        print(f"   - Top K results: {config.serp_config.top_k_results} (min 15 will be fetched for coverage)")
+        print(f"   - Concurrent limit: {config.scrape_config.concurrent_limit}")
+        print(f"   - Min scrape chars: {config.min_scrape_chars}")
+        print()
+        
         # Step 1: Initialize
         print("🔄 Step 1: Testing engine.initialize()...")
         impute_op = engine.initialize(entity, schema)
@@ -594,7 +650,7 @@ async def main():
         
         # Step 2: Search
         print("🔄 Step 2: Testing engine.search()...")
-        urls = await engine.search(impute_op, max_urls=5)
+        urls = await engine.search(impute_op)  # Uses config.serp_config.top_k_results
         print(f"   ✅ Found {len(urls)} URLs")
         if urls:
             for i, url in enumerate(urls, 1):

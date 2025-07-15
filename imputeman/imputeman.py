@@ -199,9 +199,8 @@ def _ensure_entity(entity: Union[str, EntityToImpute]) -> EntityToImpute:
         return EntityToImpute(name=entity)
     return entity
 
-
 async def main():
-    """Example usage of clean Imputeman orchestrator"""
+    """Debug version to track cost accumulation issues"""
     
     # Define what to extract
     schema = [
@@ -210,19 +209,19 @@ async def main():
         WhatToRetain(name="package_type", desc="Physical package type")
     ]
     
-    # Create entity (can also just use string "BAV99")
+    # Create entity
     entity = EntityToImpute(name="BAV99")
     
     # Get configuration
     config = get_development_config()
     
     print("🚀 Testing Imputeman Orchestrator")
-    print("=" * 50)
+    print("=" * 60)
     print(f"🎯 Entity: {entity.name}")
     print(f"📋 Schema: {len(schema)} fields")
     print()
     
-    # Explicit instantiation and execution - better visibility!
+    # Explicit instantiation and execution
     imputeman = Imputeman(config)
     
     print("🔄 Running full pipeline with streaming...")
@@ -235,57 +234,13 @@ async def main():
         capture_detailed_metrics=True
     )
     
-    # Analyze results using ImputeOp's comprehensive tracking
+    
+    # Continue with regular output
     print(f"\n🎯 Imputeman Results:")
     print(f"   Success: {impute_op.success}")
     print(f"   Extracted data: {len(impute_op.extract_results)} items")
-    print(f"   Total cost: ${impute_op.costs.total_cost:.4f}")
+    print(f"   Total cost: ${impute_op.costs.total_cost:.4f} ⚠️")
     print(f"   Live summary: {impute_op.get_live_summary()}")
-    
-    # Access detailed metrics
-    print(f"\n📊 Detailed Metrics:")
-    print(f"   Status: {impute_op.status_details}")
-    print(f"   Performance: Success rate {impute_op.performance.successful_extractions}/{impute_op.performance.urls_found}")
-    print(f"   Cost breakdown: SERP=${impute_op.costs.serp_cost:.4f}, Scrape=${impute_op.costs.scrape_cost:.4f}, Extract=${impute_op.costs.extraction_cost:.4f}")
-    
-    # Show ALL extracted content from ALL URLs
-    if impute_op.extract_results:
-        print(f"\n📋 All Extraction Results ({len(impute_op.extract_results)} URLs):")
-        print("=" * 50)
-        
-        for i, (url, extract_op) in enumerate(impute_op.extract_results.items(), 1):
-            print(f"\n🔗 Result {i}: {url[:60]}...")
-            print(f"   Success: {'✅' if extract_op.success else '❌'}")
-            
-            if extract_op.success and extract_op.content:
-                print(f"   Content type: {type(extract_op.content).__name__}")
-                
-                # Show the actual extracted data
-                if isinstance(extract_op.content, list):
-                    for j, item in enumerate(extract_op.content):
-                        print(f"   Item {j+1}: {item}")
-                elif isinstance(extract_op.content, dict):
-                    for key, value in extract_op.content.items():
-                        print(f"   {key}: {value}")
-                else:
-                    print(f"   Content: {extract_op.content}")
-                    
-                # Show token usage if available
-                if hasattr(extract_op, 'stage_tokens') and extract_op.stage_tokens:
-                    print(f"   Token usage:")
-                    for stage, tokens in extract_op.stage_tokens.items():
-                        input_t = tokens.get('input', 0)
-                        output_t = tokens.get('output', 0)
-                        if input_t > 0:
-                            reduction = ((input_t - output_t) / input_t * 100)
-                            print(f"      {stage}: {input_t:,} → {output_t:,} ({reduction:.1f}% reduction)")
-            else:
-                if hasattr(extract_op, 'error') and extract_op.error:
-                    print(f"   Error: {extract_op.error}")
-                else:
-                    print(f"   No content extracted")
-    else:
-        print(f"\n⚠️ No extraction results available")
     
     # Show errors if any
     if impute_op.errors:

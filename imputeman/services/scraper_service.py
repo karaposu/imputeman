@@ -122,7 +122,9 @@ class ScraperService:
                 url,
                 bearer_token=self.config.bearer_token,
                 poll_interval=self.config.poll_interval,
-                poll_timeout=200,  # Increased timeout to 200 seconds
+                # poll_timeout=self.config.poll_timeout,
+                poll_timeout=180,
+                flexible_timeout=self.config.flexible_timeout,  # ← Add this
                 fallback_to_browser_api=True,
             )
             

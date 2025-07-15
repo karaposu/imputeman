@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
-from serpengine.schemes import SerpEngineOp, SearchHit
+from serpengine.schemas import SerpEngineOp, SearchHit
 from brightdata.models import ScrapeResult
 from extracthero.schemes import ExtractOp, WhatToRetain
 from enum import Enum
 from datetime import datetime
-from serpengine.schemes import SerpEngineOp 
+from serpengine.schemas import SerpEngineOp 
 
 
 @dataclass
@@ -107,7 +107,7 @@ class PerformanceMetrics:
 @dataclass
 class CostBreakdown:
     """Detailed cost tracking"""
-    total_cost: float = 0.0
+   
     serp_cost: float = 0.0
     scrape_cost: float = 0.0
     extraction_cost: float = 0.0
@@ -118,6 +118,11 @@ class CostBreakdown:
     most_expensive_url: Optional[str] = None
     cheapest_successful_extraction: Optional[float] = None
     cost_threshold_exceeded: bool = False
+    
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost dynamically from components"""
+        return self.serp_cost + self.scrape_cost + self.extraction_cost
 
 
 @dataclass
@@ -225,7 +230,7 @@ class ImputeOp:
         
         self.costs.scrape_cost = sum(scrape_costs)
         self.costs.extraction_cost = sum(extract_costs)
-        self.costs.total_cost = self.costs.scrape_cost + self.costs.extraction_cost
+        
         
         if self.performance.successful_extractions > 0:
             self.costs.cost_per_successful_extraction = self.costs.total_cost / self.performance.successful_extractions

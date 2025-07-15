@@ -7,7 +7,7 @@ from datetime import datetime
 from brightdata.models import ScrapeResult
 
 from extracthero import ExtractOp,ParseOp, FilterOp
-from serpengine.schemes import SearchHit, SerpChannelOp, SerpEngineOp, UsageInfo
+from serpengine.schemas import SearchHit, SerpChannelOp, SerpEngineOp, UsageInfo
 
 
 @dataclass

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from imputeman.core.entities import EntityToImpute, WhatToRetain
 from imputeman.core.config import get_development_config
-from imputeman.flows.main_flow import simple_imputeman_flow, imputeman_flow
+from imputeman.flows.old_main_flow import simple_imputeman_flow, imputeman_flow
 from imputeman.tasks.serp_tasks import search_serp_task, validate_serp_results_task
 from imputeman.tasks.scrape_tasks import scrape_urls_task, analyze_scrape_costs_task
 from imputeman.tasks.extract_tasks import extract_data_task, validate_extractions_task
