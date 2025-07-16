@@ -134,8 +134,8 @@ def quick_scrape(url: str, save_dir: str = "./scraped_data") -> Optional[Path]:
 if __name__ == "__main__":
     # Test the function
 
-
-    test_url= "https://venkel.com/part/BAV99-EVL"
+    test_url="https://www.digikey.com/en/products/result?keywords=RGC1A23D15KGU"
+  #  test_url= "https://venkel.com/part/BAV99-EVL"
     # test_url = "https://www.example.com"
     
     print(f"Testing scrape_and_save with {test_url}")

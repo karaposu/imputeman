@@ -52,9 +52,12 @@ class ImputeEngine:
                 self.fast_path_service = FastPathService(
                     config.fast_path_config,
                     config.scrape_config.bearer_token
-                )
+                    )
             else:
                 self.fast_path_service = None
+            
+
+
 
         except Exception as e:
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -63,33 +66,26 @@ class ImputeEngine:
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
+
+    
     async def run_with_fast_path(
         self,
         entity: EntityToImpute,
-        schema: List[WhatToRetain],  # Not used for fast path, but kept for consistency
+        schema: List[WhatToRetain],
         impute_op: ImputeOp
     ) -> bool:
-        """
-        Execute fast path logic based on configured mode
-        No extraction - just scraping!
-        
-        Returns:
-            True if should continue with normal path, False if done
-        """
+        """Execute fast path logic"""
         if not self.config.fast_path_config.enabled:
-            return True  # Continue with normal path
+            return True
         
         mode = self.config.fast_path_config.mode
         
         if mode == FastPathMode.DISABLED:
-            return True  # Continue with normal path
+            return True
         
         # Execute fast path
         self.logger.info(f"🚀 Starting fast path (mode: {mode.value})")
         fast_path_start = time.time()
-        
-        # Mark that we attempted fast path
-        impute_op.performance.fast_path_attempted = True
         
         try:
             # Run fast path scraping
@@ -130,12 +126,14 @@ class ImputeEngine:
                 
                 # Update metrics
                 impute_op.performance.fast_path_duration = time.time() - fast_path_start
+                impute_op.performance.fast_path_attempted = True
                 
-                # Check if fast path was successful (any successful scrapes with data)
-                fast_path_success = any(
-                    result.success and result.data 
-                    for result in fast_path_results.values()
+                # Check if fast path was successful
+                fast_path_success = self.fast_path_service.is_fast_path_successful(
+                    fast_path_results
                 )
+                
+                impute_op.performance.fast_path_successful = fast_path_success
                 
                 if fast_path_success:
                     self.logger.info("✅ Fast path successful - raw scrape data available")
@@ -143,9 +141,11 @@ class ImputeEngine:
                     # For FAST_PATH_ONLY mode, we're done
                     if mode == FastPathMode.FAST_PATH_ONLY:
                         impute_op.update_status(
-                            PipelineStatus.FINISHED, 
+                            PipelineStatus.COMPLETED, 
                             f"Fast path completed successfully with {len(fast_path_results)} results"
                         )
+                        # Mark pipeline as successful since we got data
+                        impute_op.success = True
                         return False  # Don't continue with normal path
                 else:
                     self.logger.warning("⚠️ Fast path failed or insufficient results")
@@ -155,19 +155,16 @@ class ImputeEngine:
                         failure_reasons = []
                         for url, result in fast_path_results.items():
                             if not result.success:
-                                failure_reasons.append(f"{url[:50]}...: {result.error or 'Unknown error'}")
+                                failure_reasons.append(f"{url}: {result.error}")
                             elif not result.data:
-                                failure_reasons.append(f"{url[:50]}...: No data returned")
-                            elif hasattr(result, 'data') and isinstance(result.data, (list, dict)) and len(result.data) == 0:
-                                failure_reasons.append(f"{url[:50]}...: Empty data")
+                                failure_reasons.append(f"{url}: No data returned")
                         
-                        failure_msg = "Fast path completed with issues: " + "; ".join(failure_reasons) if failure_reasons else "Fast path failed with unknown error"
+                        failure_msg = "Fast path failed: " + "; ".join(failure_reasons)
                         impute_op.update_status(
-                            PipelineStatus.FINISHED,  # Still mark as completed since we tried
+                            PipelineStatus.FAILED, 
                             failure_msg
                         )
-                        if failure_reasons:
-                            impute_op.errors.extend(failure_reasons)
+                        impute_op.errors.append(failure_msg)
                         return False
             else:
                 self.logger.warning("Fast path returned no results")
@@ -177,7 +174,7 @@ class ImputeEngine:
                         PipelineStatus.FAILED, 
                         "Fast path failed: No results returned"
                     )
-                    impute_op.errors.append("Fast path failed: No results returned from any configured domain")
+                    impute_op.errors.append("Fast path failed: No results returned")
                     return False
         
         except Exception as e:
@@ -193,8 +190,11 @@ class ImputeEngine:
                 impute_op.update_status(PipelineStatus.FAILED, error_msg)
                 return False
         
-        # For DISABLED or FAST_PATH_WITH_FALLBACK modes, continue with normal path
+        # For FAST_PATH_WITH_FALLBACK, continue with normal path
         return True
+
+
+
     
     def initialize(self, entity: Union[str, EntityToImpute], schema: List[WhatToRetain]) -> ImputeOp:
         """
@@ -265,7 +265,7 @@ class ImputeEngine:
                 self.logger.error(error_msg)
                 return []
             
-            # Success - extract URLs using the new all_links property
+            # Success - extract URLs using the new all_links() method
             found_urls = serp_result.all_links[:max_urls]
             impute_op.urls = found_urls
             impute_op.mark_serp_completed(len(found_urls))
@@ -317,31 +317,22 @@ class ImputeEngine:
             await self._execute_batch_pipeline(impute_op, capture_metrics)
     
     def finalize(self, impute_op: ImputeOp, start_time: float) -> ImputeOp:
-        """
-        Finalize pipeline with metrics calculation and final logging
+        """Finalize pipeline with metrics calculation and final logging"""
         
-        Args:
-            impute_op: Current pipeline operation
-            start_time: Pipeline start time for total duration
-            
-        Returns:
-            Finalized ImputeOp with complete metrics
-        """
         # Calculate final timing
         impute_op.performance.total_elapsed_time = time.time() - start_time
         
-        # Determine success based on mode and results
+        # Determine success based on mode
         if self.config.fast_path_config.enabled and self.config.fast_path_config.mode == FastPathMode.FAST_PATH_ONLY:
-            # For fast path only, success = any successful scrapes with data
-            success = any(
-                result.success and result.data
-                for result in impute_op.scrape_results.values()
-            ) if impute_op.scrape_results else False
+            # For fast path only, success = any successful scrapes
+            success = impute_op.performance.successful_scrapes > 0
         else:
             # For normal path, success = any successful extractions
             success = impute_op.status_details.urls_extracted > 0
         
-        impute_op.finalize(success=success)
+        # Don't override success if already set
+        if not hasattr(impute_op, 'success') or impute_op.success is None:
+            impute_op.finalize(success=success)
         
         # Log comprehensive summary
         self._log_execution_summary(impute_op)
@@ -570,11 +561,87 @@ class ImputeEngine:
         else:
             self.logger.warning(f"⚠️ Extraction failed for {url[:40]}...")
     
+    def _normalize_extraction_content(self, content: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize extraction content to dictionary format.
+        ExtractHero can return dict, list, or other types.
+        """
+        if content is None:
+            self.logger.debug("   _normalize_extraction_content: content is None")
+            return None
+        
+    def _normalize_extraction_content(self, content: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize extraction content to dictionary format.
+        ExtractHero can return dict, list, or other types.
+        """
+        if content is None:
+            self.logger.info("   _normalize_extraction_content: content is None ⚠️")
+            return None
+        
+        self.logger.debug(f"   _normalize_extraction_content: input type = {type(content).__name__}, value = {content}")
+        
+        if isinstance(content, dict):
+            self.logger.debug(f"   _normalize_extraction_content: returning dict as-is")
+            return content
+        
+        if isinstance(content, list):
+            # If list contains dicts, merge them
+            if content and all(isinstance(item, dict) for item in content):
+                merged = {}
+                for item in content:
+                    merged.update(item)
+                self.logger.debug(f"   _normalize_extraction_content: merged {len(content)} dicts to {merged}")
+                return merged
+            # Empty list
+            elif not content:
+                self.logger.info("   _normalize_extraction_content: empty list ⚠️")
+                return {}
+            # Otherwise, create indexed dict
+            indexed = {f"item_{i}": item for i, item in enumerate(content)}
+            self.logger.debug(f"   _normalize_extraction_content: indexed list to {indexed}")
+            return indexed
+        
+        # For any other type, wrap in dict
+        wrapped = {"value": content}
+        self.logger.debug(f"   _normalize_extraction_content: wrapped {type(content).__name__} to {wrapped}")
+        return wrapped
+        
+        self.logger.debug(f"   _normalize_extraction_content: input type = {type(content).__name__}, value = {content}")
+        
+        if isinstance(content, dict):
+            return content
+        
+        if isinstance(content, list):
+            # If list contains dicts, merge them
+            if content and all(isinstance(item, dict) for item in content):
+                merged = {}
+                for item in content:
+                    merged.update(item)
+                self.logger.debug(f"   _normalize_extraction_content: merged list of dicts to {merged}")
+                return merged
+            # Empty list
+            elif not content:
+                self.logger.info("   _normalize_extraction_content: empty list ⚠️")
+                return {}
+            # Otherwise, create indexed dict
+            indexed = {f"item_{i}": item for i, item in enumerate(content)}
+            self.logger.debug(f"   _normalize_extraction_content: indexed list to {indexed}")
+            return indexed
+        
+        # For any other type, wrap in dict
+        wrapped = {"value": content}
+        self.logger.debug(f"   _normalize_extraction_content: wrapped {type(content).__name__} to {wrapped}")
+        return wrapped
+        return wrapped
+    
     async def _scrape_single_url(self, url: str, capture_metrics: bool):
         """Scrape a single URL and optionally capture metrics"""
         
         try:
             self.logger.debug(f"        🔍 Attempting to scrape {url[:40]}...")
+          #  self.logger.debug(f"      Scraper config: {self.config.scrape_config}")
+           # self.logger.debug(f"      Config attributes: {[attr for attr in dir(self.config.scrape_config) if not attr.startswith('_')]}")
             
             scrape_result = await self.registry.scraper.scrape_urls([url])
             
@@ -609,14 +676,7 @@ class ImputeEngine:
         for scrape_res in scrape_result.values():
             total_cost += getattr(scrape_res, 'cost', 0) or 0
             if hasattr(scrape_res, 'data') and scrape_res.data:
-                # Handle both HTML (string) and JSON (dict/list) data
-                if isinstance(scrape_res.data, str):
-                    total_size += len(scrape_res.data)
-                elif isinstance(scrape_res.data, (dict, list)):
-                    import json
-                    total_size += len(json.dumps(scrape_res.data))
-                else:
-                    total_size += len(str(scrape_res.data))
+                total_size += len(scrape_res.data)
         
         return total_cost, total_size
     
@@ -635,12 +695,14 @@ class ImputeEngine:
     
     def _log_execution_summary(self, impute_op: ImputeOp):
         """Log comprehensive execution summary"""
+
+      
         
         self.logger.info("🎯 Imputeman Pipeline Results:")
         self.logger.info(f"   ✅ Overall Success: {impute_op.success}")
         
         if impute_op.performance.urls_found > 0:
-            success_rate = impute_op.performance.successful_scrapes / impute_op.performance.urls_found
+            success_rate = impute_op.performance.successful_extractions / impute_op.performance.urls_found
             self.logger.info(f"   📊 Success Rate: {success_rate:.1%}")
         
         self.logger.info(f"   ⏱️ Total Duration: {impute_op.performance.total_elapsed_time:.2f}s")
@@ -650,24 +712,26 @@ class ImputeEngine:
         if impute_op.performance.time_to_first_result:
             self.logger.info(f"   ⚡ Time to First Result: {impute_op.performance.time_to_first_result:.2f}s")
         
-        # Add fast path info
+        # Live summary
+        self.logger.info(f"   📈 Live Summary: {impute_op.get_live_summary()}")
+        
+        # if impute_op.errors:
+        #     self.logger.warning(f"   ⚠️ Errors Encountered: {len(impute_op.errors)}")
+        #     for error in impute_op.errors:
+        #         self.logger.warning(f"      • {error}")
+        
         if impute_op.performance.fast_path_attempted:
-            self.logger.info(f"   🚀 Fast Path: Attempted (duration: {impute_op.performance.fast_path_duration:.2f}s)")
+            self.logger.info(f"   🚀 Fast Path: {'Success' if impute_op.performance.fast_path_successful else 'Failed'}")
             if impute_op.fast_path_results:
                 for url, result in impute_op.fast_path_results.items():
                     if result.success:
                         if isinstance(result.data, list):
                             self.logger.info(f"      ✅ {url[:50]}...: {len(result.data)} items")
-                        elif isinstance(result.data, dict):
-                            self.logger.info(f"      ✅ {url[:50]}...: JSON object")
                         else:
                             self.logger.info(f"      ✅ {url[:50]}...: Data retrieved")
                     else:
                         self.logger.info(f"      ❌ {url[:50]}...: {result.error or 'Failed'}")
-        
-        # Live summary
-        self.logger.info(f"   📈 Live Summary: {impute_op.get_live_summary()}")
-        
+
         if impute_op.errors:
             self.logger.warning(f"   ⚠️ Errors Encountered: {len(impute_op.errors)}")
             for i, error in enumerate(impute_op.errors, 1):
@@ -694,24 +758,8 @@ class ImputeEngine:
                     self.logger.info(f"         Success: ❌")
                     if hasattr(extract_op, 'error'):
                         self.logger.info(f"         Error: {extract_op.error}")
-        elif impute_op.scrape_results and not impute_op.extract_results:
-            # Fast path mode - show scrape results
-            self.logger.info(f"  ")
-            self.logger.info(f"   📄 Fast path scrape results:")
-            self.logger.info(f"  ")
-            for url, scrape_result in impute_op.scrape_results.items():
-                if scrape_result.success:
-                    if isinstance(scrape_result.data, list):
-                        self.logger.info(f"      ✅ {url[:40]}...: {len(scrape_result.data)} items")
-                    elif isinstance(scrape_result.data, dict):
-                        self.logger.info(f"      ✅ {url[:40]}...: JSON data")
-                    else:
-                        data_size = len(scrape_result.data) if scrape_result.data else 0
-                        self.logger.info(f"      ✅ {url[:40]}...: {data_size:,} chars")
-                else:
-                    self.logger.info(f"      ❌ {url[:40]}...: {scrape_result.error or 'Failed'}")
         else:
-            self.logger.warning(f"   ⚠️ No results found!")
+            self.logger.warning(f"   ⚠️ No extraction results found!")
 
 
 # ========== TESTING / DEMONSTRATION ==========
@@ -750,7 +798,7 @@ async def main():
         
         # Print config details
         print(f"⚙️ Configuration:")
-        print(f"   - Top K results: {config.serp_config.top_k_results}")
+        print(f"   - Top K results: {config.serp_config.top_k_results} (min 15 will be fetched for coverage)")
         print(f"   - Concurrent limit: {config.scrape_config.concurrent_limit}")
         print(f"   - Min scrape chars: {config.min_scrape_chars}")
         print()

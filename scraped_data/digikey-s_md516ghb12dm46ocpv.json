@@ -1,0 +1,162 @@
+[
+  {
+    "product_url": "https://www.digikey.com/en/products/detail/carlo-gavazzi-inc/RGC1A23D15KGU/7696441",
+    "category_url": "https://www.digikey.com/en/products/filter/contactors-solid-state/970",
+    "part_number": "RGC1A23D15KGU",
+    "manufacturer": "Carlo Gavazzi Inc.",
+    "manufacturer_url": "https://www.digikey.com/en/supplier-centers/carlo-gavazzi",
+    "datasheet_url": "http://gavazziautomation.com/images/PIM/DATASHEET/ENG/rgc_u.pdf",
+    "rohs_compliant": "ROHS3 Compliant",
+    "stock": "In-Stock: 49",
+    "price": "1 : $58.90000 : Bulk;10 : $55.95500 : Bulk;50 : $53.01000 : Bulk;100 : $51.24300 : Bulk",
+    "series": "RGC",
+    "package": "Bulk",
+    "product_status": "Active",
+    "mounting_type": "Chassis Mount, DIN Rail",
+    "package_case": "SSR with Integrated Heat Sink",
+    "output_type": "AC, Zero Cross",
+    "circuit": "SPST-NO (1 Form A)",
+    "voltage_input": "3 ~ 32VDC",
+    "voltage_load": "24 ~ 240V",
+    "load_current": "20 A",
+    "termination_style": "Screw Terminal",
+    "image": "https://mm.digikey.com/Volume0/opasdata/d220001/derivates/6/003/231/756/MFG_RGC1A23A15KGU_web%28640x640%29.jpg",
+    "input_link": "https://www.digikey.com/en/products/result?keywords=RGC1A23D15KGU",
+    "base_product_number": "RGC1A23",
+    "lead_time": "10 Weeks",
+    "product_category": "Contactors (Solid State)",
+    "digikey_part_number": "1864-1169-ND",
+    "manufacture_part_number": "RGC1A23D15KGU",
+    "documents_and_media": [
+      {
+        "type": "Datasheets",
+        "link": [
+          "http://gavazziautomation.com/images/PIM/DATASHEET/ENG/rgc_u.pdf"
+        ]
+      },
+      {
+        "type": "Video File",
+        "link": []
+      },
+      {
+        "type": "Featured Product",
+        "link": [
+          "https://www.digikey.com/en/product-highlight/c/carlo-gavazzi/rgc1-series-solid-state-relays"
+        ]
+      },
+      {
+        "type": "CAD Models",
+        "link": [
+          "https://www.digikey.com/en/models/7696441"
+        ]
+      },
+      {
+        "type": "Manuals",
+        "link": [
+          "http://gavazziautomation.com/images/PIM/MANUALS/ENG/SSR_IL_RG.pdf"
+        ]
+      },
+      {
+        "type": "Forum Discussions",
+        "link": [
+          "https://forum.digikey.com/t/solid-state-relay-parallel-outputs/25334"
+        ]
+      }
+    ],
+    "url": "https://www.digikey.com/en/products/detail/carlo-gavazzi-inc/RGC1A23D15KGU/7696441?s=N4IgTCBcDaIEoHEDCBGAgmAzAERQVgGkEBVEAXQF8g",
+    "pricing_per_quantity": {
+      "quantity1": 1,
+      "pricing_qty1": 58.9,
+      "quantity2": 10,
+      "pricing_qty2": 55.955,
+      "quantity3": 50,
+      "pricing_qty3": 53.01,
+      "quantity4": 100,
+      "pricing_qty4": 51.243
+    },
+    "moisture_sensitivity_level_msl": "Not Applicable",
+    "eccn": "EAR99",
+    "htsus": "8536.49.0080",
+    "additional_resources": "Other Names: 1864-1169; Manufacturer Standard Package: 2",
+    "other_names": [
+      "1864-1169"
+    ],
+    "marketplace_product": false,
+    "standard_package": null,
+    "mfr_standard_lead_time": 70,
+    "alternate_packaging": {
+      "part_number": null,
+      "packaging": null,
+      "min_order_quantity": null,
+      "price": null
+    },
+    "categories": [
+      "Relays",
+      "Contactors (Solid State)"
+    ],
+    "product_attributes": [
+      {
+        "type": "Category",
+        "description": "Relays, Contactors (Solid State)"
+      },
+      {
+        "type": "Manufacturer",
+        "description": "Carlo Gavazzi Inc."
+      },
+      {
+        "type": "Series",
+        "description": "RGC"
+      },
+      {
+        "type": "Packaging",
+        "description": "Bulk"
+      },
+      {
+        "type": "Part Status",
+        "description": "Active"
+      },
+      {
+        "type": "Mounting Type",
+        "description": "Chassis Mount, DIN Rail"
+      },
+      {
+        "type": "Circuit",
+        "description": "SPST-NO (1 Form A)"
+      },
+      {
+        "type": "Output Type",
+        "description": "AC, Zero Cross"
+      },
+      {
+        "type": "Load Current",
+        "description": "20 A"
+      },
+      {
+        "type": "Voltage - Input",
+        "description": "3 ~ 32VDC"
+      },
+      {
+        "type": "Voltage - Load",
+        "description": "24 ~ 240V"
+      },
+      {
+        "type": "Termination Style",
+        "description": "Screw Terminal"
+      },
+      {
+        "type": "Package / Case",
+        "description": "SSR with Integrated Heat Sink"
+      },
+      {
+        "type": "Base Product Number",
+        "description": "RGC1A23"
+      }
+    ],
+    "pop_up": null,
+    "tariff_status": null,
+    "timestamp": "2025-07-15T21:14:55.969Z",
+    "input": {
+      "url": "https://www.digikey.com/en/products/result?keywords=RGC1A23D15KGU"
+    }
+  }
+]

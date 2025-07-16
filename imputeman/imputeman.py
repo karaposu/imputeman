@@ -65,6 +65,18 @@ class Imputeman:
         try:
             # Step 1: Initialize pipeline
             impute_op = self.engine.initialize(entity, schema)
+
+
+            # Step 2: Check and execute fast path FIRST!
+            should_continue = await self.engine.run_with_fast_path(
+                entity, schema, impute_op
+            )
+            if not should_continue:
+                # Fast path only mode or fast path succeeded, finalize and return
+                return self.engine.finalize(impute_op, start_time)
+            
+
+            
             
             # Step 2: Search for URLs
             urls = await self.engine.search(impute_op, max_urls=max_urls)
@@ -203,15 +215,26 @@ async def main():
     """Debug version to track cost accumulation issues"""
     
     # Define what to extract
+    # schema = [
+    #     WhatToRetain(name="component_type", desc="Type of electronic component"),
+    #     WhatToRetain(name="voltage_rating", desc="Maximum voltage rating"),
+    #     WhatToRetain(name="package_type", desc="Physical package type")
+    # ]
+
     schema = [
-        WhatToRetain(name="component_type", desc="Type of electronic component"),
-        WhatToRetain(name="voltage_rating", desc="Maximum voltage rating"),
-        WhatToRetain(name="package_type", desc="Physical package type")
+        WhatToRetain(name="company_information", desc="generic information about company"),
+        WhatToRetain(name="employees", desc="employee names"),
+        WhatToRetain(name="social_media_handlers", desc="company's social media handlers")
     ]
     
-    # Create entity
-    entity = EntityToImpute(name="BAV99")
     
+    # Create entity
+
+    entity_name="MOTORCU HAYRİ MOTORSİKLET VE BİSİKLET SANAYİ VE TİCARET LİMİTED ŞİRKETİ"
+    # entity_name="BAV99"
+    entity = EntityToImpute(name=entity_name)
+    
+
     # Get configuration
     config = get_development_config()
     

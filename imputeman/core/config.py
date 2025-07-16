@@ -1,30 +1,69 @@
 # imputeman/core/config.py
-"""Configuration classes for Imputeman pipeline stages"""
 
+from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import os
 
 
+class FastPathMode(Enum):
+    """Modes for fast path execution"""
+    DISABLED = "disabled"              # Run normal SERP → Scrape → Extract only
+    FAST_PATH_ONLY = "fast_path_only"  # Run fast path only, return even if fails
+    FAST_PATH_WITH_FALLBACK = "fast_path_with_fallback"  # Try fast path first, fallback to normal if fails
+
+
+@dataclass
+class FastPathConfig:
+    """Configuration for domain-specific fast path shortcuts"""
+    enabled: bool = False
+    mode: FastPathMode = FastPathMode.DISABLED
+    
+    # Domain-specific configurations
+    digikey_enabled: bool = True
+    digikey_base_url: str = "https://www.digikey.com/en/products/result?keywords="
+    
+    # Add more domains as needed
+    mouser_enabled: bool = False
+    mouser_base_url: str = "https://www.mouser.com/Search/Refine?Keyword="
+    
+    # Timeout specific to fast path (might be different from general scraping)
+    poll_timeout: float = 30.0  # Shorter timeout for fast path
+    poll_interval: float = 5.0
+    
+    # Quality thresholds
+    min_result_size: int = 1000  # Minimum chars to consider fast path successful
+    
+    def get_fast_path_urls(self, entity_name: str) -> Dict[str, str]:
+        """Generate fast path URLs for enabled domains"""
+        urls = {}
+        
+        if self.digikey_enabled:
+            urls['digikey'] = f"{self.digikey_base_url}{entity_name}"
+            
+        if self.mouser_enabled:
+            urls['mouser'] = f"{self.mouser_base_url}{entity_name}"
+            
+        # Add more domains as configured
+        return urls
 
 
 @dataclass
 class SerpConfig:
     """Configuration for SERP/search tasks"""
-    top_k_results: int = 10  # Maximum URLs to return from search
-    activate_interleaving: bool = True  # Interleave results from different channels
-    deduplicate_links: bool = True  # Remove duplicate URLs across channels
+    top_k_results: int = 10
+    activate_interleaving: bool = True
+    deduplicate_links: bool = True
     
 
 @dataclass  
 class ScrapeConfig:
     """Configuration for web scraping tasks"""
-    bearer_token: Optional[str] = None  # BrightData API token
-    poll_interval: float = 10.0  # How often to check scraping status
-    poll_timeout: float = 120.0  # Maximum time to wait for scrape completion
-    flexible_timeout: bool = False  # Allow domain-specific timeout overrides
-
-    concurrent_limit: int = 5  # Maximum concurrent scrape requests
+    bearer_token: Optional[str] = None
+    poll_interval: float = 10.0
+    poll_timeout: float = 120.0
+    flexible_timeout: bool = True
+    concurrent_limit: int = 5
     
     def __post_init__(self):
         if not self.bearer_token:
@@ -34,8 +73,6 @@ class ScrapeConfig:
 @dataclass
 class ExtractConfig:
     """Configuration for data extraction tasks"""
-    # Currently ExtractHero handles all its own configuration
-    # This is kept as a placeholder for future use
     pass
 
 
@@ -45,32 +82,76 @@ class PipelineConfig:
     serp_config: SerpConfig = field(default_factory=SerpConfig)
     scrape_config: ScrapeConfig = field(default_factory=ScrapeConfig)
     extract_config: ExtractConfig = field(default_factory=ExtractConfig)
+    fast_path_config: FastPathConfig = field(default_factory=FastPathConfig)  # New!
     
     # Quality control
-    min_scrape_chars: int = 5000  # Minimum characters for valid scrape (skip error pages)
-    
+    min_scrape_chars: int = 5000
+
+
+# Preset configurations for the three cases
 
 def get_default_config() -> PipelineConfig:
-    """Get default pipeline configuration"""
-    return PipelineConfig()
+    """Get default pipeline configuration (Case 1: Normal path only)"""
+    config = PipelineConfig()
+    config.fast_path_config.enabled = False
+    config.fast_path_config.mode = FastPathMode.DISABLED
+    return config
 
 
+def get_digikey_fast_only_config() -> PipelineConfig:
+    """Case 2: DigiKey fast path only, return even if fails"""
+    config = PipelineConfig()
+    
+    # Enable fast path in "only" mode
+    config.fast_path_config.enabled = True
+    config.fast_path_config.mode = FastPathMode.FAST_PATH_ONLY
+    config.fast_path_config.digikey_enabled = True
+    
+    # Adjust timeouts for faster response
+    config.fast_path_config.poll_timeout = 200.0
+    config.fast_path_config.poll_interval = 10.0
+    
+    return config
+
+
+def get_digikey_fast_with_fallback_config() -> PipelineConfig:
+    """Case 3: Try DigiKey fast path first, fallback to normal if fails"""
+    config = PipelineConfig()
+    
+    # Enable fast path with fallback
+    config.fast_path_config.enabled = True
+    config.fast_path_config.mode = FastPathMode.FAST_PATH_WITH_FALLBACK
+    config.fast_path_config.digikey_enabled = True
+    
+    # Fast path settings
+    config.fast_path_config.poll_timeout = 30.0  # Quick timeout for fast path
+    config.fast_path_config.min_result_size = 5000  # Need substantial content
+    
+    # Normal path settings (for fallback)
+    config.serp_config.top_k_results = 5
+    config.scrape_config.poll_timeout = 120.0
+    
+    return config
 
 
 def get_development_config() -> PipelineConfig:
     """Get configuration optimized for development/testing"""
     config = PipelineConfig()
     
-    # Reduce limits for development
+    # Standard development settings
     config.serp_config.top_k_results = 5
-    config.serp_config.activate_interleaving = True  # Good for testing diversity
-    config.serp_config.deduplicate_links = True  # Avoid duplicate work
+    config.serp_config.activate_interleaving = True
+    config.serp_config.deduplicate_links = True
     
-    config.scrape_config.poll_timeout = 60.0  # Shorter timeout for dev
-    config.min_scrape_chars = 3000  # More permissive for testing
+    config.scrape_config.poll_timeout = 60.0
+    config.scrape_config.flexible_timeout = True
+    config.min_scrape_chars = 3000
+    
+    # Fast path disabled by default in dev
+    config.fast_path_config.enabled = False
+    config.fast_path_config.mode = FastPathMode.DISABLED
     
     return config
-
 
 
 def get_production_config() -> PipelineConfig:
@@ -79,133 +160,17 @@ def get_production_config() -> PipelineConfig:
     
     # Production optimizations
     config.serp_config.top_k_results = 15
-    config.serp_config.activate_interleaving = True  # Maximize diversity
-    config.serp_config.deduplicate_links = True  # Save on scraping costs
+    config.serp_config.activate_interleaving = True
+    config.serp_config.deduplicate_links = True
     
-    config.scrape_config.poll_timeout = 180.0  # Longer timeout for reliability
-    config.min_scrape_chars = 10000  # Stricter - only process full pages
+    config.scrape_config.poll_timeout = 180.0
+    config.scrape_config.flexible_timeout = True
+    config.min_scrape_chars = 10000
+    
+    # Consider enabling fast path with fallback in production
+    config.fast_path_config.enabled = True
+    config.fast_path_config.mode = FastPathMode.FAST_PATH_WITH_FALLBACK
+    config.fast_path_config.digikey_enabled = True
+    config.fast_path_config.min_result_size = 10000
     
     return config
-
-
-
-
-
-
-# @dataclass
-# class SerpConfig:
-#     """Configuration for SERP/search tasks"""
-#     max_retries: int = 1
-#     retry_delay_seconds: int = 2
-#     timeout_seconds: float = 30.0
-#     rate_limit_per_minute: Optional[int] = None
-#     top_k_results: int = 10
-#     # search_engines: list = field(default_factory=lambda: ["google_api", "serpapi"])  
-#     search_engines: list = field(default_factory=lambda: ["google_api"])  
-#     api_key: Optional[str] = None
-    
-#     def __post_init__(self):
-#         if not self.api_key:
-#             self.api_key = os.getenv("SERP_API_KEY")
-
-
-# @dataclass  
-# class ScrapeConfig:
-#     """Configuration for web scraping tasks"""
-#     max_retries: int = 1
-#     retry_delay_seconds: int = 5
-#     timeout_seconds: float = 60.0
-#     concurrent_limit: int = 500
-#     rate_limit_per_minute: Optional[int] = 60
-#     use_browser_fallback: bool = True
-#     max_cost_threshold: float = 100.0  # Dollar amount
-#     bearer_token: Optional[str] = None
-#     poll_interval: float = 10.0
-#     poll_timeout: float = 120.0
-    
-#     def __post_init__(self):
-#         if not self.bearer_token:
-#             self.bearer_token = os.getenv("BRIGHT_DATA_TOKEN")
-
-
-# @dataclass
-# class ExtractConfig:
-#     """Configuration for data extraction tasks"""
-#     max_retries: int = 1
-#     retry_delay_seconds: int = 3
-#     timeout_seconds: float = 120.0
-#     confidence_threshold: float = 0.7
-#     max_tokens: int = 4000
-#     extraction_model: str = "gpt-4"
-#     fallback_model: str = "gpt-3.5-turbo"
-#     api_key: Optional[str] = None
-    
-#     def __post_init__(self):
-#         if not self.api_key:
-#             self.api_key = os.getenv("OPENAI_API_KEY")
-
-
-# @dataclass
-# class BudgetScrapeConfig(ScrapeConfig):
-#     """Cheaper scraping configuration for cost-conscious workflows"""
-#     concurrent_limit: int = 2
-#     rate_limit_per_minute: Optional[int] = 30
-#     timeout_seconds: float = 30.0
-#     use_browser_fallback: bool = False
-#     max_cost_threshold: float = 20.0
-
-
-# @dataclass
-# class PipelineConfig:
-#     """Master configuration for the entire pipeline"""
-#     serp_config: SerpConfig = field(default_factory=SerpConfig)
-#     scrape_config: ScrapeConfig = field(default_factory=ScrapeConfig)
-#     budget_scrape_config: BudgetScrapeConfig = field(default_factory=BudgetScrapeConfig)
-#     extract_config: ExtractConfig = field(default_factory=ExtractConfig)
-    
-#     # Global pipeline settings
-#     enable_caching: bool = True
-#     cache_duration_hours: int = 24
-#     max_total_cost: float = 200.0
-#     enable_cost_monitoring: bool = True
-#     log_level: str = "INFO"
-    
-#     # Conditional flow settings
-#     cost_threshold_for_budget_mode: float = 100.0
-#     min_successful_extractions: int = 1
-#     quality_threshold: float = 0.8
-    
-#     min_scrape_chars: int = 5000  # Minimum characters for valid scrape
-    
-
-# def get_default_config() -> PipelineConfig:
-#     """Get default pipeline configuration"""
-#     return PipelineConfig()
-
-
-# def get_development_config() -> PipelineConfig:
-#     """Get configuration optimized for development/testing"""
-#     config = PipelineConfig()
-    
-#     # Reduce limits for development
-#     config.serp_config.top_k_results = 3
-#     config.scrape_config.concurrent_limit = 2
-#     config.scrape_config.timeout_seconds = 30.0
-#     config.extract_config.max_tokens = 2000
-#     config.max_total_cost = 50.0
-    
-#     return config
-
-
-# def get_production_config() -> PipelineConfig:
-#     """Get configuration optimized for production"""
-#     config = PipelineConfig()
-    
-#     # Production optimizations
-#     config.serp_config.top_k_results = 15
-#     config.scrape_config.concurrent_limit = 10
-#     config.scrape_config.rate_limit_per_minute = 120
-#     config.extract_config.max_tokens = 8000
-#     config.max_total_cost = 500.0
-    
-#     return config

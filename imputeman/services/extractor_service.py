@@ -351,7 +351,7 @@ async def main():
     """
 
 
-    from imputeman.utils import load_html
+    from imputeman.utils.helper import load_html
 
 
     print("=== Testing ExtractorService ===")

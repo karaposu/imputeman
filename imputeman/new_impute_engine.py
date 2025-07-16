@@ -143,7 +143,7 @@ class ImputeEngine:
                     # For FAST_PATH_ONLY mode, we're done
                     if mode == FastPathMode.FAST_PATH_ONLY:
                         impute_op.update_status(
-                            PipelineStatus.FINISHED, 
+                            PipelineStatus.COMPLETED, 
                             f"Fast path completed successfully with {len(fast_path_results)} results"
                         )
                         return False  # Don't continue with normal path
@@ -163,7 +163,7 @@ class ImputeEngine:
                         
                         failure_msg = "Fast path completed with issues: " + "; ".join(failure_reasons) if failure_reasons else "Fast path failed with unknown error"
                         impute_op.update_status(
-                            PipelineStatus.FINISHED,  # Still mark as completed since we tried
+                            PipelineStatus.COMPLETED,  # Still mark as completed since we tried
                             failure_msg
                         )
                         if failure_reasons:

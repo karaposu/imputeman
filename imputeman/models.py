@@ -103,6 +103,9 @@ class PerformanceMetrics:
     extraction_performance: Optional[Dict[str, Any]] = None  # filter/parse breakdown
     polling_analysis: Optional[Dict[str, float]] = None  # BrightData polling stats
 
+    fast_path_attempted: bool = False
+    fast_path_duration: float = 0.0
+
 
 @dataclass
 class CostBreakdown:
@@ -140,7 +143,7 @@ class ImputeOp:
     # Status tracking (NEW!)
     success: bool = False
     status: PipelineStatus = PipelineStatus.INITIALIZING
-    status_details: StatusDetails = field(default_factory=StatusDetails)  # Now works properly
+    status_details: StatusDetails = field(default_factory=StatusDetails)  
     
     # Execution results
     search_op: Optional[SerpEngineOp] = None
@@ -162,6 +165,8 @@ class ImputeOp:
     # Metadata
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
+    
+    # fast_path_attempted: Optional[datetime] = None
     
     def update_status(self, new_status: PipelineStatus, details: str = ""):
         """Update pipeline status with timestamp"""
